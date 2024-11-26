@@ -1,0 +1,7 @@
+2024-11-26 14:04:52 [error]: Error: Route.post() requires a callback function but got a [object Undefined]
+    at Route.<computed> [as post] (/Users/adamkhalil/Gibon praktik/video manager v2/node_modules/express/lib/router/route.js:216:15)
+    at app.<computed> [as post] (/Users/adamkhalil/Gibon praktik/video manager v2/node_modules/express/lib/application.js:499:19)
+    at file:///Users/adamkhalil/Gibon%20praktik/video%20manager%20v2/src/index.js:63:5
+    at ModuleJob.run (node:internal/modules/esm/module_job:262:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:482:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
