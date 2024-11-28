@@ -40,21 +40,18 @@ export class DatabaseService {
       SET status = ?, end_time = NOW()
     `;
     const params = [status];
-
+  
     if (status === 'completed') {
-      sql += `, converted_file_name = ?, converted_file_size = ?`;
-      params.push(
-        additionalData.convertedFileName,
-        additionalData.convertedFileSize
-      );
+      sql += `, converted_files = ?`;
+      params.push(JSON.stringify(additionalData.convertedFiles || []));
     } else if (status === 'failed') {
       sql += `, error_message = ?`;
       params.push(additionalData.errorMessage);
     }
-
+  
     sql += ` WHERE id = ?`;
     params.push(id);
-
+  
     try {
       await pool.execute(sql, params);
       logger.info(`Updated conversion ID: ${id} to status: ${status}`);
@@ -63,6 +60,7 @@ export class DatabaseService {
       throw err;
     }
   }
+  
 
   async getExpiredFiles() {
     const sql = `

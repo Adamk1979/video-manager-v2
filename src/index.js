@@ -101,17 +101,22 @@ cron.schedule('0 0 * * *', async () => {
     const expiredFiles = await dbService.getExpiredFiles();
 
     for (const file of expiredFiles) {
-      const filePath = path.join(PATHS.MEDIA, file.converted_file_name);
+      // Parse the converted_files JSON column
+      const convertedFiles = fileRecord.converted_files || [];
 
-      // Delete the file from the filesystem
-      try {
-        await fs.unlink(filePath);
-        logger.info(`Deleted expired file: ${filePath}`);
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          logger.warn(`File not found for deletion: ${filePath}`);
-        } else {
-          logger.error(`Error deleting file ${filePath}:`, err);
+      for (const convertedFile of convertedFiles) {
+        const filePath = path.join(PATHS.MEDIA, convertedFile.fileName);
+
+        // Delete the file from the filesystem
+        try {
+          await fs.unlink(filePath);
+          logger.info(`Deleted expired file: ${filePath}`);
+        } catch (err) {
+          if (err.code === 'ENOENT') {
+            logger.warn(`File not found for deletion: ${filePath}`);
+          } else {
+            logger.error(`Error deleting file ${filePath}:`, err);
+          }
         }
       }
 
@@ -124,6 +129,7 @@ cron.schedule('0 0 * * *', async () => {
     logger.error('Error during expired files cleanup:', err);
   }
 });
+
 
 
 // Global handler for unhandled promise rejections

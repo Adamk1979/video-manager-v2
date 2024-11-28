@@ -9,6 +9,7 @@ import { PATHS } from '../utils/constants.js';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { pool } from '../utils/dbConfig.js';
 import logger from '../logger/logger.js';
+import fs from 'fs';
 
 /**
  * Controller function to stream a video file to the client.
@@ -20,9 +21,10 @@ async function view(req, res) {
     const { file } = req.params;
     const dbService = new DatabaseService();
 
-    // Fetch file information from the database
+    // Fetch file information from the database using JSON_SEARCH
     const sql = `
-      SELECT * FROM conversions WHERE converted_file_name = ?
+      SELECT * FROM conversions
+      WHERE JSON_SEARCH(converted_files, 'one', ?, NULL, '$[*].fileName') IS NOT NULL
     `;
     const [rows] = await pool.execute(sql, [file]);
     const fileRecord = rows[0];
@@ -41,6 +43,26 @@ async function view(req, res) {
         .send({ message: 'File has expired and is no longer available' });
     }
 
+    // Use the converted_files object directly
+    const convertedFiles = fileRecord.converted_files || [];
+    // If necessary, add a check for array
+    const filesArray = Array.isArray(convertedFiles) ? convertedFiles : [];
+
+    const fileInfo = filesArray.find((f) => f.fileName === file);
+
+    if (!fileInfo) {
+      logger.warn(`File not found in converted_files: ${file}`);
+      return res.status(404).send({ message: 'File not found' });
+    }
+
+    // Check if the file exists on the filesystem
+    const filePath = `${PATHS.MEDIA}/${file}`;
+    if (!fs.existsSync(filePath)) {
+      logger.warn(`File not found on filesystem: ${filePath}`);
+      return res.status(404).send({ message: 'File not found' });
+    }
+
+    // Stream the file to the client
     const videoManager = new VideoManager({});
     const readStream = videoManager.readFile({
       filePath: PATHS.MEDIA,
@@ -54,14 +76,16 @@ async function view(req, res) {
 
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${fileRecord.converted_file_name}"`
+      `attachment; filename="${fileInfo.fileName}"`
     );
+    res.setHeader('Content-Type', 'application/octet-stream');
     readStream.pipe(res);
   } catch (err) {
     logger.error('Error in view controller:', err);
     res.status(500).send({ message: 'Internal server error' });
   }
 }
+
 
 /**
  * Controller function to list all media files.
@@ -101,6 +125,9 @@ async function process(req, res) {
     });
   }
 
+  // Parse multiple formats if provided
+  const formatTypes = convert ? formatType?.split(',').map(f => f.trim()) : [];
+
   try {
     // Initialize the conversion record in the database
     await dbService.createConversionRecord({
@@ -109,7 +136,7 @@ async function process(req, res) {
       originalFileSize: 0,
       conversionType:
         compress && convert
-          ? 'compress_and_convert'
+          ? 'multi_step'
           : compress
           ? 'compression'
           : 'format_conversion',
@@ -117,7 +144,7 @@ async function process(req, res) {
 
     logger.info(`Started processing job with ID: ${conversionId}`);
 
-    // Access the uploaded file from req.file (set by Multer)
+    // Access the uploaded file from req.file
     const uploadedFile = req.file;
 
     if (!uploadedFile) {
@@ -158,32 +185,61 @@ async function process(req, res) {
       });
     }
 
+    // Store converted files information
+    const convertedFiles = [];
+
     // Perform conversion if requested
     if (convert) {
-      const targetFormat = formatType || 'mp4'; // Default to 'mp4' if not specified
-      const isConverted = await videoManager.convert(targetFormat);
-      if (!isConverted) {
-        throw new Error('Conversion failed');
+      if (formatTypes.length === 0) {
+        throw new Error('No format types specified for conversion.');
+      }
+
+      for (const format of formatTypes) {
+        const tempVideoManager = new VideoManager({
+          id: `${uploadService.videoId}-${format}`,
+          extension: format,
+          inputFile: videoManager.inputFile,
+        });
+
+        const isConverted = await tempVideoManager.convert(format);
+        if (!isConverted) {
+          throw new Error(`Conversion to ${format} failed`);
+        }
+
+        // Collect information about each converted file
+        convertedFiles.push({
+          format,
+          fileName: tempVideoManager.fileName,
+          fileSize: tempVideoManager.fileSize,
+          fileLink: linkToFile({ req, file: tempVideoManager.fileName }),
+        });
       }
     }
 
     // Clean up temporary files
     await fileService.cleanFolder(uploadService.videoPath);
 
-    // Update the conversion record as completed
+    // Update the conversion record as completed with multiple files
     await dbService.updateConversionStatus(conversionId, 'completed', {
-      convertedFileName: videoManager.fileName,
-      convertedFileSize: videoManager.fileSize,
+      convertedFiles,
     });
 
     logger.info(`Processing job completed with ID: ${conversionId}`);
 
-    // Send response to client
-    res.send({
+    // Prepare the response
+    const response = {
       initialSize: formatBytes(uploadService.originalFileSize),
-      finalSize: formatBytes(videoManager.fileSize),
-      processedVideo: linkToFile({ req, file: videoManager.fileName }),
-    });
+      finalSize: compress
+        ? formatBytes(videoManager.fileSize)
+        : formatBytes(uploadService.originalFileSize),
+      convertedFiles: convertedFiles.map((file) => ({
+        format: file.format,
+        size: formatBytes(file.fileSize),
+        link: file.fileLink,
+      })),
+    };
+
+    res.send(response);
   } catch (err) {
     // Handle errors during the upload and processing
     await dbService.updateConversionStatus(conversionId, 'failed', {
