@@ -1,3 +1,6 @@
+//src/services/VideoManager.js
+
+
 import fs from 'fs';
 
 import { PATHS } from '../utils/constants.js';
@@ -24,29 +27,34 @@ export class VideoManager {
     this.inputFile = inputFile;
   }
   
-  async compress() {
-    this.fileName = `${this.id}.${this.extension}`;
+  async compress(outputFile = null) {
+    this.fileName = outputFile || `${this.id}.${this.extension}`;
     this.outputFile = `${this.outputPath}/${this.fileName}`;
-
+  
     return await new Promise((resolve, reject) => {
       ffmpeg(this.inputFile)
+        // Add compression options here if needed
         .save(this.outputFile)
         .on('end', () => {
           const stats = fs.statSync(this.outputFile);
           this.fileSize = stats.size;
-
+  
+          // Update inputFile to the output of compression for further processing
+          this.inputFile = this.outputFile;
+  
           resolve(true);
         })
         .on('error', (err) => {
-          reject('Error occurred: ', err.message);
+          reject(new Error(`Error occurred during compression: ${err.message}`));
         });
     });
   }
+  
 
   async convert(formatType) {
-    this.fileName = `${this.id}.${formatType}`;
+    this.fileName = `${this.id}-${Date.now()}.${formatType}`; // Use timestamp to ensure unique file names
     this.outputFile = `${this.outputPath}/${this.fileName}`;
-
+  
     return await new Promise((resolve, reject) => {
       ffmpeg(this.inputFile)
         .format(formatType)
@@ -54,15 +62,18 @@ export class VideoManager {
         .on('end', () => {
           const stats = fs.statSync(this.outputFile);
           this.fileSize = stats.size;
-
+  
+          // Update inputFile to the output of conversion for further processing
+          this.inputFile = this.outputFile;
+  
           resolve(true);
         })
         .on('error', (err) => {
-          reject('Error occurred: ', err.message);
+          reject(new Error(`Error occurred during conversion: ${err.message}`));
         });
     });
   }
-
+  
   readFile({ filePath, fileType }) {
     return fs.createReadStream(`${filePath}/${fileType}`);
   }

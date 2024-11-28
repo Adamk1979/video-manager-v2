@@ -1,4 +1,6 @@
-import fs from 'fs/promises';
+// src/services/FileService.js
+
+import * as fs from 'fs/promises'; // Corrected import
 
 export class FileService {
   constructor() {}
@@ -8,7 +10,7 @@ export class FileService {
       try {
         await fs.access(path);
       } catch {
-        await fs.mkdir(path);
+        await fs.mkdir(path, { recursive: true }); // Ensure parent directories are created
       }
     }
   }

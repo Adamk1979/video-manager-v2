@@ -4,9 +4,9 @@ import 'dotenv/config'; // Load environment variables
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import cron from 'node-cron';
-import fs from 'fs/promises';
+import * as fs from 'fs/promises';
 import path from 'path';
-
+import multer from 'multer';
 import { PORT, PATHS } from './utils/constants.js';
 import { fileService } from './services/FileService.js';
 import { VideoManageController } from './controllers/VideoManager.js';
@@ -58,8 +58,13 @@ const heavyLimiter = rateLimit({
   },
 });
 
-app.post('/compress', heavyLimiter, VideoManageController.compress);
-app.post('/convert', heavyLimiter, VideoManageController.convert);
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
+
+app.post('/process', heavyLimiter, upload.single('file'), VideoManageController.process);
+
+
 
 
 // Start the server

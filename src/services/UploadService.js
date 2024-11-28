@@ -1,8 +1,9 @@
-import fs from 'fs/promises';
+// src/services/UploadService.js
+
+import * as fs from 'fs/promises'; // Corrected import
 import { v4 as uuid4 } from 'uuid';
 import { PATHS } from '../utils/constants.js';
 import { fileTypeFromBuffer } from 'file-type';
-
 import { Buffer } from 'buffer';
 
 export class UploadService {
@@ -14,39 +15,38 @@ export class UploadService {
     this.bytesReceived = 0;
     this.videoPath = path;
     this.videoFile = '';
-    this.originalFileName = ''; 
+    this.originalFileName = '';
     this.originalFileSize = 0;
   }
+
+
+  setFile(buffer, originalName) {
+    this.videoBuffer = buffer;
+    this.bytesReceived = buffer.length;
+    this.originalFileName = originalName;
+  }
+
 
   async uploadFile() {
     try {
       const fileType = await fileTypeFromBuffer(this.videoBuffer);
 
       if (!fileType?.ext) {
-        return;
+        throw new Error('Unable to determine file type.');
       }
 
       this.videoExtension = fileType.ext;
       this.videoFile = `${this.videoPath}/${this.videoId}.${this.videoExtension}`;
-      this.originalFileName = `${this.videoId}.${this.videoExtension}`; // Store original file name
-      this.originalFileSize = this.bytesReceived; // Store original file size
+      this.originalFileName = `${this.videoId}.${this.videoExtension}`;
+      this.originalFileSize = this.bytesReceived;
 
       await fs.writeFile(this.videoFile, this.videoBuffer);
 
       return true;
     } catch (err) {
-      const errorMessage = 'Something went wrong while writing the file ' + err;
-      throw Error(errorMessage);
+      const errorMessage = 'Something went wrong while writing the file: ' + err.message;
+      throw new Error(errorMessage);
     }
   }
 
-  async handleChunks(chunk) {
-    this.bytesReceived += chunk.length;
-
-    if (this.bytesReceived > this.fileSizeLimit) {
-      throw Error('File too large');
-    }
-
-    this.videoBuffer = Buffer.concat([this.videoBuffer, chunk]);
-  }
 }

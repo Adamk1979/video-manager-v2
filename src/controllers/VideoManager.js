@@ -1,3 +1,5 @@
+//src/controllers/VideoManager.js
+
 import { UploadService } from '../services/UploadService.js';
 import { VideoManager } from '../services/VideoManager.js';
 import { linkToFile } from '../utils/linkToFile.js';
@@ -76,110 +78,28 @@ async function viewMedia(req, res) {
   }
 }
 
-/**
- * Controller function to handle video compression.
- * @param {object} req - Express request object.
- * @param {object} res - Express response object.
- */
-async function compress(req, res) {
-  const dbService = new DatabaseService();
-  const uploadService = new UploadService({});
-  const videoManager = new VideoManager({});
-  const conversionId = uploadService.videoId;
 
-  try {
-    // Initialize the conversion record in the database
-    await dbService.createConversionRecord({
-      id: conversionId,
-      originalFileName: '',
-      originalFileSize: 0,
-      conversionType: 'compression',
-    });
-
-    logger.info(`Started compression job with ID: ${conversionId}`);
-
-    req.on('data', async (chunk) => {
-      await uploadService.handleChunks(chunk);
-    });
-
-    req.on('end', async () => {
-      try {
-        const isUpload = await uploadService.uploadFile();
-
-        if (!isUpload) {
-          throw new Error('Upload failed');
-        }
-
-        // Update the original file name and size in the database
-        await dbService.updateConversionStatus(conversionId, 'processing', {
-          originalFileName: uploadService.originalFileName,
-          originalFileSize: uploadService.originalFileSize,
-        });
-
-        videoManager.updateProperties({
-          id: uploadService.videoId,
-          extension: uploadService.videoExtension,
-          inputFile: uploadService.videoFile,
-        });
-
-        const isCompressed = await videoManager.compress();
-        if (!isCompressed) {
-          throw new Error('Compression failed');
-        }
-
-        await fileService.cleanFolder(uploadService.videoPath);
-
-        // Update the conversion record as completed
-        await dbService.updateConversionStatus(conversionId, 'completed', {
-          convertedFileName: videoManager.fileName,
-          convertedFileSize: videoManager.fileSize,
-        });
-
-        logger.info(`Compression job completed with ID: ${conversionId}`);
-
-        res.send({
-          initialSize: formatBytes(uploadService.bytesReceived),
-          compressedSize: formatBytes(videoManager.fileSize),
-          compressedVideo: linkToFile({ req, file: videoManager.fileName }),
-        });
-      } catch (err) {
-        // Handle errors during the upload and compression process
-        await dbService.updateConversionStatus(conversionId, 'failed', {
-          errorMessage: err.message,
-        });
-        logger.error(`Compression failed for ID: ${conversionId}`, err);
-        res.status(500).send({ error: err.message });
-      }
-    });
-
-    req.on('error', async (err) => {
-      const message = `Error during upload: ${err.message}`;
-      await dbService.updateConversionStatus(conversionId, 'failed', {
-        errorMessage: message,
-      });
-      logger.error(`Upload error for conversion ID: ${conversionId}`, err);
-      res.status(500).send({ error: message });
-    });
-  } catch (err) {
-    await dbService.updateConversionStatus(conversionId, 'failed', {
-      errorMessage: err.message,
-    });
-    logger.error(`Compression failed for ID: ${conversionId}`, err);
-    res.status(500).send({ error: err.message });
-  }
-}
 
 /**
  * Controller function to handle video format conversion.
  * @param {object} req - Express request object.
  * @param {object} res - Express response object.
  */
-async function convert(req, res) {
+async function process(req, res) {
   const dbService = new DatabaseService();
   const uploadService = new UploadService({});
-  const { fileType } = req.query;
   const videoManager = new VideoManager({});
   const conversionId = uploadService.videoId;
+
+  // Extract user options from the request query parameters
+  const { compress = false, convert = false, formatType } = req.query;
+
+  // Ensure at least one operation is specified
+  if (!compress && !convert) {
+    return res.status(400).send({
+      error: 'At least one of "compress" or "convert" operations must be specified.',
+    });
+  }
 
   try {
     // Initialize the conversion record in the database
@@ -187,84 +107,96 @@ async function convert(req, res) {
       id: conversionId,
       originalFileName: '',
       originalFileSize: 0,
-      conversionType: 'format_conversion',
+      conversionType:
+        compress && convert
+          ? 'compress_and_convert'
+          : compress
+          ? 'compression'
+          : 'format_conversion',
     });
 
-    logger.info(`Started format conversion job with ID: ${conversionId}`);
+    logger.info(`Started processing job with ID: ${conversionId}`);
 
-    req.on('data', async (chunk) => {
-      await uploadService.handleChunks(chunk);
+    // Access the uploaded file from req.file (set by Multer)
+    const uploadedFile = req.file;
+
+    if (!uploadedFile) {
+      throw new Error('No file uploaded');
+    }
+
+    // Set the file buffer and original name in UploadService
+    uploadService.setFile(uploadedFile.buffer, uploadedFile.originalname);
+
+    // Proceed with file upload
+    const isUploaded = await uploadService.uploadFile();
+    if (!isUploaded) {
+      throw new Error('Upload failed');
+    }
+
+    // Update the original file name and size in the database
+    await dbService.updateConversionStatus(conversionId, 'processing', {
+      originalFileName: uploadService.originalFileName,
+      originalFileSize: uploadService.originalFileSize,
     });
 
-    req.on('end', async () => {
-      try {
-        const isUploaded = await uploadService.uploadFile();
-        if (!isUploaded) {
-          throw new Error('Upload failed');
-        }
+    // Update videoManager properties
+    videoManager.updateProperties({
+      id: uploadService.videoId,
+      extension: uploadService.videoExtension,
+      inputFile: uploadService.videoFile,
+    });
 
-        // Update the original file name and size in the database
-        await dbService.updateConversionStatus(conversionId, 'processing', {
-          originalFileName: uploadService.originalFileName,
-          originalFileSize: uploadService.originalFileSize,
-        });
-
-        videoManager.updateProperties({
-          id: uploadService.videoId,
-          extension: uploadService.videoExtension,
-          inputFile: uploadService.videoFile,
-        });
-
-        const isConverted = await videoManager.convert(fileType);
-        if (!isConverted) {
-          throw new Error('Conversion failed');
-        }
-
-        await fileService.cleanFolder(uploadService.videoPath);
-
-        // Update the conversion record as completed
-        await dbService.updateConversionStatus(conversionId, 'completed', {
-          convertedFileName: videoManager.fileName,
-          convertedFileSize: videoManager.fileSize,
-        });
-
-        logger.info(`Format conversion job completed with ID: ${conversionId}`);
-
-        res.send({
-          initialSize: formatBytes(uploadService.bytesReceived),
-          convertedSize: formatBytes(videoManager.fileSize),
-          convertedVideo: linkToFile({ req, file: videoManager.fileName }),
-        });
-      } catch (err) {
-        // Handle errors during the upload and conversion process
-        await dbService.updateConversionStatus(conversionId, 'failed', {
-          errorMessage: err.message,
-        });
-        logger.error(`Conversion failed for ID: ${conversionId}`, err);
-        res.status(500).send({ error: err.message });
+    // Perform compression if requested
+    if (compress) {
+      const isCompressed = await videoManager.compress();
+      if (!isCompressed) {
+        throw new Error('Compression failed');
       }
+      // Update the input file for further processing
+      videoManager.updateProperties({
+        inputFile: videoManager.outputFile,
+      });
+    }
+
+    // Perform conversion if requested
+    if (convert) {
+      const targetFormat = formatType || 'mp4'; // Default to 'mp4' if not specified
+      const isConverted = await videoManager.convert(targetFormat);
+      if (!isConverted) {
+        throw new Error('Conversion failed');
+      }
+    }
+
+    // Clean up temporary files
+    await fileService.cleanFolder(uploadService.videoPath);
+
+    // Update the conversion record as completed
+    await dbService.updateConversionStatus(conversionId, 'completed', {
+      convertedFileName: videoManager.fileName,
+      convertedFileSize: videoManager.fileSize,
     });
 
-    req.on('error', async (err) => {
-      const message = `Error during upload: ${err.message}`;
-      await dbService.updateConversionStatus(conversionId, 'failed', {
-        errorMessage: message,
-      });
-      logger.error(`Upload error for conversion ID: ${conversionId}`, err);
-      res.status(500).send({ error: message });
+    logger.info(`Processing job completed with ID: ${conversionId}`);
+
+    // Send response to client
+    res.send({
+      initialSize: formatBytes(uploadService.originalFileSize),
+      finalSize: formatBytes(videoManager.fileSize),
+      processedVideo: linkToFile({ req, file: videoManager.fileName }),
     });
   } catch (err) {
+    // Handle errors during the upload and processing
     await dbService.updateConversionStatus(conversionId, 'failed', {
       errorMessage: err.message,
     });
-    logger.error(`Conversion failed for ID: ${conversionId}`, err);
+    logger.error(`Processing failed for ID: ${conversionId}`, err);
     res.status(500).send({ error: err.message });
   }
 }
 
+
 export const VideoManageController = {
   view,
   viewMedia,
-  compress,
-  convert,
+  process,
 };
