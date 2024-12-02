@@ -95,36 +95,59 @@ app.listen(PORT, () => {
 
 
 cron.schedule('0 0 * * *', async () => {
-  console.log('Running cleanup job at 00:00...');
+  logger.info('Running cleanup job at 00:00...');
   const dbService = new DatabaseService();
+  
   try {
     const expiredFiles = await dbService.getExpiredFiles();
 
     for (const file of expiredFiles) {
       // Parse the converted_files JSON column
-      const convertedFiles = fileRecord.converted_files || [];
+      const convertedFiles = file.converted_files || [];
+      const filesArray = Array.isArray(convertedFiles) ? convertedFiles : [];
 
-      for (const convertedFile of convertedFiles) {
+      // Delete converted files
+      for (const convertedFile of filesArray) {
         const filePath = path.join(PATHS.MEDIA, convertedFile.fileName);
 
-        // Delete the file from the filesystem
         try {
           await fs.unlink(filePath);
-          logger.info(`Deleted expired file: ${filePath}`);
+          logger.info(`Deleted expired converted file: ${filePath}`);
         } catch (err) {
           if (err.code === 'ENOENT') {
-            logger.warn(`File not found for deletion: ${filePath}`);
+            logger.warn(`Converted file not found for deletion: ${filePath}`);
           } else {
-            logger.error(`Error deleting file ${filePath}:`, err);
+            logger.error(`Error deleting converted file ${filePath}:`, err);
+          }
+        }
+      }
+
+      // Delete compressed file if it exists
+      if (file.compressed_file_name) {
+        const compressedFilePath = path.join(PATHS.MEDIA, file.compressed_file_name);
+        
+        try {
+          await fs.unlink(compressedFilePath);
+          logger.info(`Deleted expired compressed file: ${compressedFilePath}`);
+        } catch (err) {
+          if (err.code === 'ENOENT') {
+            logger.warn(`Compressed file not found for deletion: ${compressedFilePath}`);
+          } else {
+            logger.error(`Error deleting compressed file ${compressedFilePath}:`, err);
           }
         }
       }
 
       // Delete the record from the database
-      await dbService.deleteConversionRecord(file.id);
+      try {
+        await dbService.deleteConversionRecord(file.id);
+        logger.info(`Deleted conversion record with ID: ${file.id}`);
+      } catch (err) {
+        logger.error(`Error deleting conversion record ID: ${file.id}`, err);
+      }
     }
 
-    logger.info('Expired files cleanup completed');
+    logger.info('Expired files cleanup completed successfully');
   } catch (err) {
     logger.error('Error during expired files cleanup:', err);
   }

@@ -12,19 +12,19 @@ export class DatabaseService {
       (id, original_file_name, original_file_size, conversion_type, status, start_time, expires_at)
       VALUES (?, ?, ?, ?, ?, NOW(), ?)
     `;
-
+  
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7); // Set expiration date to 7 days from now
-
+  
     const params = [
       conversionData.id,
       conversionData.originalFileName,
       conversionData.originalFileSize,
       conversionData.conversionType,
-      'processing',
+      'pending',
       expiresAt,
     ];
-
+  
     try {
       await pool.execute(sql, params);
       logger.info(`Created conversion record with ID: ${conversionData.id}`);
@@ -33,6 +33,7 @@ export class DatabaseService {
       throw err;
     }
   }
+  
 
   async updateConversionStatus(id, status, additionalData = {}) {
     let sql = `
@@ -42,12 +43,15 @@ export class DatabaseService {
     const params = [status];
   
     if (status === 'completed') {
-      sql += `, converted_files = ?`;
-      params.push(JSON.stringify(additionalData.convertedFiles || []));
-    } else if (status === 'failed') {
-      sql += `, error_message = ?`;
-      params.push(additionalData.errorMessage);
-    }
+        sql += `, converted_files = ?, compressed_file_name = ?`;
+        params.push(
+          JSON.stringify(additionalData.convertedFiles || []),
+          additionalData.compressedFileName || null
+        );
+      } else if (status === 'failed') {
+        sql += `, error_message = ?`;
+        params.push(additionalData.errorMessage);
+      }
   
     sql += ` WHERE id = ?`;
     params.push(id);

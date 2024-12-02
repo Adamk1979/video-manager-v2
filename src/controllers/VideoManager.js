@@ -21,12 +21,13 @@ async function view(req, res) {
     const { file } = req.params;
     const dbService = new DatabaseService();
 
-    // Fetch file information from the database using JSON_SEARCH
+    // Fetch file information from the database
     const sql = `
       SELECT * FROM conversions
       WHERE JSON_SEARCH(converted_files, 'one', ?, NULL, '$[*].fileName') IS NOT NULL
+         OR compressed_file_name = ?
     `;
-    const [rows] = await pool.execute(sql, [file]);
+    const [rows] = await pool.execute(sql, [file, file]);
     const fileRecord = rows[0];
 
     if (!fileRecord) {
@@ -43,15 +44,22 @@ async function view(req, res) {
         .send({ message: 'File has expired and is no longer available' });
     }
 
-    // Use the converted_files object directly
-    const convertedFiles = fileRecord.converted_files || [];
-    // If necessary, add a check for array
-    const filesArray = Array.isArray(convertedFiles) ? convertedFiles : [];
+    let fileInfo = null;
 
-    const fileInfo = filesArray.find((f) => f.fileName === file);
+    // Check if the file is in converted_files
+    const convertedFiles = fileRecord.converted_files || [];
+    const filesArray = Array.isArray(convertedFiles) ? convertedFiles : [];
+    fileInfo = filesArray.find((f) => f.fileName === file);
+
+    // If not found, check if it's the compressed file
+    if (!fileInfo && fileRecord.compressed_file_name === file) {
+      fileInfo = {
+        fileName: fileRecord.compressed_file_name,
+      };
+    }
 
     if (!fileInfo) {
-      logger.warn(`File not found in converted_files: ${file}`);
+      logger.warn(`File not found: ${file}`);
       return res.status(404).send({ message: 'File not found' });
     }
 
@@ -116,7 +124,7 @@ async function process(req, res) {
   const conversionId = uploadService.videoId;
 
   // Extract user options from the request query parameters
-  const { compress = false, convert = false, formatType } = req.query;
+  const { compress = false, convert = false, formatType, resolution, width } = req.query;
 
   // Ensure at least one operation is specified
   if (!compress && !convert) {
@@ -125,22 +133,36 @@ async function process(req, res) {
     });
   }
 
-  // Parse multiple formats if provided
-  const formatTypes = convert ? formatType?.split(',').map(f => f.trim()) : [];
+  // Validate resolution and width for compression
+  if (compress) {
+    const validResolutions = ['1080p', '720p', '480p', 'custom'];
+    if (resolution && !validResolutions.includes(resolution)) {
+      return res.status(400).send({
+        error: `Invalid resolution specified. Valid options are ${validResolutions.join(', ')}`,
+      });
+    }
+    if (resolution === 'custom' && (!width || isNaN(width))) {
+      return res.status(400).send({
+        error: 'Custom width must be a valid number',
+      });
+    }
+  }
+
+  // Parse multiple formats if provided for conversion
+  const formatTypes = convert ? formatType?.split(',').map((f) => f.trim()) : [];
+
+  let compressedFile = null; // To hold compressed file details
+  const convertedFiles = []; // To hold converted files details
 
   try {
     // Initialize the conversion record in the database
     await dbService.createConversionRecord({
       id: conversionId,
-      originalFileName: '',
-      originalFileSize: 0,
-      conversionType:
-        compress && convert
-          ? 'multi_step'
-          : compress
-          ? 'compression'
-          : 'format_conversion',
+      originalFileName: '', // Set this initially, will be updated later
+      originalFileSize: 0,  // Set this initially, will be updated later
+      conversionType: compress && convert ? 'multi_step' : compress ? 'compression' : 'format_conversion',
     });
+    
 
     logger.info(`Started processing job with ID: ${conversionId}`);
 
@@ -175,18 +197,28 @@ async function process(req, res) {
 
     // Perform compression if requested
     if (compress) {
-      const isCompressed = await videoManager.compress();
+      const isCompressed = await videoManager.compress(resolution, width);
       if (!isCompressed) {
         throw new Error('Compression failed');
       }
+    
       // Update the input file for further processing
       videoManager.updateProperties({
         inputFile: videoManager.outputFile,
       });
+    
+      // Update compressed file name in the database
+      await dbService.updateConversionStatus(conversionId, 'processing', {
+        compressedFileName: videoManager.fileName,
+      });
+    
+      // Collect information about the compressed file
+      compressedFile = {
+        fileName: videoManager.fileName,
+        fileSize: videoManager.fileSize,
+        fileLink: linkToFile({ req, file: videoManager.fileName }),
+      };
     }
-
-    // Store converted files information
-    const convertedFiles = [];
 
     // Perform conversion if requested
     if (convert) {
@@ -222,6 +254,7 @@ async function process(req, res) {
     // Update the conversion record as completed with multiple files
     await dbService.updateConversionStatus(conversionId, 'completed', {
       convertedFiles,
+      compressedFileName: compressedFile ? compressedFile.fileName : null,
     });
 
     logger.info(`Processing job completed with ID: ${conversionId}`);
@@ -232,6 +265,12 @@ async function process(req, res) {
       finalSize: compress
         ? formatBytes(videoManager.fileSize)
         : formatBytes(uploadService.originalFileSize),
+      compressedFile: compressedFile
+        ? {
+            size: formatBytes(compressedFile.fileSize),
+            link: compressedFile.fileLink,
+          }
+        : null,
       convertedFiles: convertedFiles.map((file) => ({
         format: file.format,
         size: formatBytes(file.fileSize),

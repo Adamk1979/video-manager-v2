@@ -27,26 +27,70 @@ export class VideoManager {
     this.inputFile = inputFile;
   }
   
-  async compress(outputFile = null) {
-    this.fileName = outputFile || `${this.id}.${this.extension}`;
+  async compress(resolution, customWidth) {
+    this.fileName = `${this.id}.${this.extension}`;
     this.outputFile = `${this.outputPath}/${this.fileName}`;
-  
+
+    // Map resolution options to actual sizes
+    const resolutionMap = {
+      '1080p': '1920x1080',
+      '720p': '1280x720',
+      '480p': '854x480',
+    };
+
+    let sizeOption;
+
+    if (resolution === 'custom' && customWidth) {
+      // Calculate aspect ratio based on the input video
+      const aspectRatio = await this.getAspectRatio();
+      const numericWidth = parseInt(customWidth, 10);
+      const customHeight = Math.round(numericWidth / aspectRatio);
+      sizeOption = `${numericWidth}x${customHeight}`;
+    } else if (resolutionMap[resolution]) {
+      sizeOption = resolutionMap[resolution];
+    } else {
+      // Default to original size if resolution is not specified or invalid
+      sizeOption = null;
+    }
+
     return await new Promise((resolve, reject) => {
-      ffmpeg(this.inputFile)
-        // Add compression options here if needed
-        .save(this.outputFile)
+      let command = ffmpeg(this.inputFile);
+
+      if (sizeOption) {
+        command = command.size(sizeOption);
+      }
+
+      command
+        .videoCodec('libx264') // Use H.264 codec for better compression
+        .output(this.outputFile)
         .on('end', () => {
           const stats = fs.statSync(this.outputFile);
           this.fileSize = stats.size;
-  
-          // Update inputFile to the output of compression for further processing
-          this.inputFile = this.outputFile;
-  
           resolve(true);
         })
         .on('error', (err) => {
-          reject(new Error(`Error occurred during compression: ${err.message}`));
-        });
+          reject(`Error occurred: ${err.message}`);
+        })
+        .run();
+    });
+  }
+
+  // Helper method to get the aspect ratio of the input video
+  async getAspectRatio() {
+    return await new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(this.inputFile, (err, metadata) => {
+        if (err) {
+          reject(err);
+        } else {
+          const videoStream = metadata.streams.find((s) => s.codec_type === 'video');
+          if (videoStream) {
+            const { width, height } = videoStream;
+            resolve(width / height);
+          } else {
+            reject('No video stream found');
+          }
+        }
+      });
     });
   }
   
