@@ -19,15 +19,32 @@ import fs from 'fs';
 async function view(req, res) {
   try {
     const { file } = req.params;
+    console.log(`Requested file: ${file}`);
+
     const dbService = new DatabaseService();
 
-    // Fetch file information from the database
+    // Updated SQL query to also check for files in the converted_files array
     const sql = `
-      SELECT * FROM conversions
-      WHERE JSON_SEARCH(converted_files, 'one', ?, NULL, '$[*].fileName') IS NOT NULL
-         OR compressed_file_name = ?
+      SELECT c.* 
+      FROM conversions c 
+      WHERE c.compressed_file_name = ?
+         OR EXISTS (
+           SELECT 1 
+           FROM JSON_TABLE(
+             c.converted_files,
+             '$[*]' COLUMNS(
+               fileName VARCHAR(255) PATH '$.fileName'
+             )
+           ) as files
+           WHERE files.fileName = ?
+         )
+         OR (
+           c.audio_removed = 1 
+           AND ? LIKE CONCAT(c.id, '-noaudio.%')
+         )
     `;
-    const [rows] = await pool.execute(sql, [file, file]);
+
+    const [rows] = await pool.execute(sql, [file, file, file]);
     const fileRecord = rows[0];
 
     if (!fileRecord) {
@@ -48,7 +65,7 @@ async function view(req, res) {
 
     // Check if the file is in converted_files
     const convertedFiles = fileRecord.converted_files || [];
-    const filesArray = Array.isArray(convertedFiles) ? convertedFiles : [];
+    const filesArray = Array.isArray(convertedFiles) ? convertedFiles : JSON.parse(convertedFiles);
     fileInfo = filesArray.find((f) => f.fileName === file);
 
     // If not found, check if it's the compressed file
@@ -70,6 +87,16 @@ async function view(req, res) {
       return res.status(404).send({ message: 'File not found' });
     }
 
+    // Determine content type based on file extension
+    const ext = file.split('.').pop().toLowerCase();
+    const contentType = {
+      mp4: 'video/mp4',
+      webm: 'video/webm',
+      avi: 'video/x-msvideo',
+      mov: 'video/quicktime',
+      mkv: 'video/x-matroska'
+    }[ext] || 'application/octet-stream';
+
     // Stream the file to the client
     const videoManager = new VideoManager({});
     const readStream = videoManager.readFile({
@@ -82,11 +109,18 @@ async function view(req, res) {
       res.status(404).send({ message: 'File not found' });
     });
 
+    // Set appropriate headers
+    res.setHeader('Content-Type', contentType);
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="${fileInfo.fileName}"`
     );
-    res.setHeader('Content-Type', 'application/octet-stream');
+
+    // Add a custom header to indicate if audio was removed
+    if (fileRecord.audio_removed) {
+      res.setHeader('X-Audio-Removed', 'true');
+    }
+
     readStream.pipe(res);
   } catch (err) {
     logger.error('Error in view controller:', err);
@@ -124,12 +158,22 @@ async function process(req, res) {
   const conversionId = uploadService.videoId;
 
   // Extract user options from the request query parameters
-  const { compress = false, convert = false, formatType, resolution, width } = req.query;
+  const { 
+    compress = false, 
+    convert = false, 
+    removeAudio = false, 
+    formatType, 
+    resolution, 
+    width 
+  } = req.query;
+
+  // Convert removeAudio to boolean if it's coming as a string
+  const shouldRemoveAudio = removeAudio === 'true' || removeAudio === true;
 
   // Ensure at least one operation is specified
-  if (!compress && !convert) {
+  if (!compress && !convert && !shouldRemoveAudio) {
     return res.status(400).send({
-      error: 'At least one of "compress" or "convert" operations must be specified.',
+      error: 'At least one operation (compress, convert, or removeAudio) must be specified.',
     });
   }
 
@@ -151,18 +195,18 @@ async function process(req, res) {
   // Parse multiple formats if provided for conversion
   const formatTypes = convert ? formatType?.split(',').map((f) => f.trim()) : [];
 
-  let compressedFile = null; // To hold compressed file details
-  const convertedFiles = []; // To hold converted files details
+  let audioRemovedFile = null; // To track the audio-removed file
+  const convertedFiles = [];
+  let compressedFile = null;
 
   try {
     // Initialize the conversion record in the database
     await dbService.createConversionRecord({
       id: conversionId,
-      originalFileName: '', // Set this initially, will be updated later
-      originalFileSize: 0,  // Set this initially, will be updated later
+      originalFileName: '', // Will be updated later
+      originalFileSize: 0,  // Will be updated later
       conversionType: compress && convert ? 'multi_step' : compress ? 'compression' : 'format_conversion',
     });
-    
 
     logger.info(`Started processing job with ID: ${conversionId}`);
 
@@ -188,36 +232,64 @@ async function process(req, res) {
       originalFileSize: uploadService.originalFileSize,
     });
 
-    // Update videoManager properties
+    // Update videoManager properties with the full path
     videoManager.updateProperties({
       id: uploadService.videoId,
       extension: uploadService.videoExtension,
-      inputFile: uploadService.videoFile,
+      inputFile: uploadService.videoFile, // Full path
     });
+
+    // **Logging to Confirm Properties**
+    logger.info(`VideoManager properties set - ID: ${videoManager.id}, Extension: ${videoManager.extension}, InputFile: ${videoManager.inputFile}`);
+
+    // Perform audio removal if requested
+    if (shouldRemoveAudio) {
+      const isAudioRemoved = await videoManager.removeAudio();
+      if (!isAudioRemoved) {
+        throw new Error('Audio removal failed');
+      }
+
+      // Store audio-removed file information
+      audioRemovedFile = {
+        fileName: videoManager.fileName,
+        fileSize: videoManager.fileSize,
+        fileLink: linkToFile({ req, file: videoManager.fileName })
+      };
+
+      logger.info(`Audio removed file saved at: ${videoManager.outputFile}`);
+
+      // Update the input file to the full path of the audio-removed file
+      videoManager.updateProperties({
+        inputFile: videoManager.outputFile, // Ensure this is the full path
+      });
+
+      // **Logging After Updating Input File**
+      logger.info(`VideoManager inputFile updated after audio removal - InputFile: ${videoManager.inputFile}`);
+    }
 
     // Perform compression if requested
     if (compress) {
+      logger.info(`Compressing file: ${videoManager.inputFile} with resolution: ${resolution}, width: ${width}`);
+
       const isCompressed = await videoManager.compress(resolution, width);
       if (!isCompressed) {
         throw new Error('Compression failed');
       }
-    
-      // Update the input file for further processing
+
+      // **Ensure id and extension remain the same after compression**
       videoManager.updateProperties({
         inputFile: videoManager.outputFile,
+        // id and extension remain unchanged
       });
-    
-      // Update compressed file name in the database
-      await dbService.updateConversionStatus(conversionId, 'processing', {
-        compressedFileName: videoManager.fileName,
-      });
-    
+
       // Collect information about the compressed file
       compressedFile = {
         fileName: videoManager.fileName,
         fileSize: videoManager.fileSize,
         fileLink: linkToFile({ req, file: videoManager.fileName }),
       };
+
+      logger.info(`Compression completed. Output file: ${videoManager.outputFile}, Size: ${videoManager.fileSize}`);
     }
 
     // Perform conversion if requested
@@ -230,7 +302,7 @@ async function process(req, res) {
         const tempVideoManager = new VideoManager({
           id: `${uploadService.videoId}-${format}`,
           extension: format,
-          inputFile: videoManager.inputFile,
+          inputFile: videoManager.inputFile, // Ensuring full path
         });
 
         const isConverted = await tempVideoManager.convert(format);
@@ -245,26 +317,33 @@ async function process(req, res) {
           fileSize: tempVideoManager.fileSize,
           fileLink: linkToFile({ req, file: tempVideoManager.fileName }),
         });
+
+        logger.info(`Conversion to ${format} completed. Output file: ${tempVideoManager.outputFile}, Size: ${tempVideoManager.fileSize}`);
       }
     }
 
     // Clean up temporary files
     await fileService.cleanFolder(uploadService.videoPath);
 
-    // Update the conversion record as completed with multiple files
+    // Update the conversion record as completed
     await dbService.updateConversionStatus(conversionId, 'completed', {
       convertedFiles,
       compressedFileName: compressedFile ? compressedFile.fileName : null,
+      audioRemoved: shouldRemoveAudio,
+      audioRemovedFile: audioRemovedFile
     });
 
     logger.info(`Processing job completed with ID: ${conversionId}`);
 
-    // Prepare the response
+    // Prepare the response with the audio-removed file information
     const response = {
       initialSize: formatBytes(uploadService.originalFileSize),
-      finalSize: compress
-        ? formatBytes(videoManager.fileSize)
-        : formatBytes(uploadService.originalFileSize),
+      finalSize: formatBytes(shouldRemoveAudio || compress ? videoManager.fileSize : uploadService.originalFileSize),
+      audioRemoved: shouldRemoveAudio,
+      audioRemovedFile: audioRemovedFile ? {
+        size: formatBytes(audioRemovedFile.fileSize),
+        link: audioRemovedFile.fileLink
+      } : null,
       compressedFile: compressedFile
         ? {
             size: formatBytes(compressedFile.fileSize),

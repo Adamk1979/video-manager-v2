@@ -1,0 +1,144 @@
+{
+    "info": {
+        "name": "Video Manager API",
+        "description": "Postman collection to test the Video Manager API endpoints for compression, conversion, and file management.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Process - Compress and Remove Audio",
+            "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                    "mode": "formdata",
+                    "formdata": [
+                        {
+                            "key": "file",
+                            "type": "file",
+                            "description": "Upload the video file for processing."
+                        }
+                    ]
+                },
+                "url": {
+                    "raw": "{{host}}/process?compress=true&removeAudio=true&resolution=720p",
+                    "host": ["{{host}}"],
+                    "path": ["process"],
+                    "query": [
+                        {
+                            "key": "compress",
+                            "value": "true"
+                        },
+                        {
+                            "key": "removeAudio",
+                            "value": "true"
+                        },
+                        {
+                            "key": "resolution",
+                            "value": "720p"
+                        }
+                    ]
+                },
+                "description": "Compress video to 720p and remove audio"
+            }
+        },
+        {
+            "name": "Process - Convert to Multiple Formats",
+            "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                    "mode": "formdata",
+                    "formdata": [
+                        {
+                            "key": "file",
+                            "type": "file",
+                            "description": "Upload the video file for processing."
+                        }
+                    ]
+                },
+                "url": {
+                    "raw": "{{host}}/process?convert=true&formatType=mp4,webm",
+                    "host": ["{{host}}"],
+                    "path": ["process"],
+                    "query": [
+                        {
+                            "key": "convert",
+                            "value": "true"
+                        },
+                        {
+                            "key": "formatType",
+                            "value": "mp4,webm"
+                        }
+                    ]
+                },
+                "description": "Convert video to multiple formats (mp4, webm)"
+            }
+        },
+        {
+            "name": "Process - Custom Resolution",
+            "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                    "mode": "formdata",
+                    "formdata": [
+                        {
+                            "key": "file",
+                            "type": "file",
+                            "description": "Upload the video file for processing."
+                        }
+                    ]
+                },
+                "url": {
+                    "raw": "{{host}}/process?compress=true&resolution=custom&width=1280",
+                    "host": ["{{host}}"],
+                    "path": ["process"],
+                    "query": [
+                        {
+                            "key": "compress",
+                            "value": "true"
+                        },
+                        {
+                            "key": "resolution",
+                            "value": "custom"
+                        },
+                        {
+                            "key": "width",
+                            "value": "1280"
+                        }
+                    ]
+                },
+                "description": "Compress video with custom resolution (width: 1280px)"
+            }
+        },
+        {
+            "name": "View - Download File",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{host}}/view/{{fileName}}",
+                    "host": ["{{host}}"],
+                    "path": [
+                        "view",
+                        "{{fileName}}"
+                    ]
+                },
+                "description": "Download the processed file using the file name returned in the `/process` response."
+            }
+        }
+    ],
+    "variable": [
+        {
+            "key": "host",
+            "value": "http://localhost:3000",
+            "type": "string"
+        },
+        {
+            "key": "fileName",
+            "value": "",
+            "type": "string"
+        }
+    ]
+}

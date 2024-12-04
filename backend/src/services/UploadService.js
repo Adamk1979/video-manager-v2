@@ -11,42 +11,34 @@ export class UploadService {
     this.videoId = uuid4();
     this.videoExtension = '';
     this.videoBuffer = Buffer.alloc(0);
-    this.fileSizeLimit = process.env.FILE_SIZE_LIMIT || 2 * 1024 * 1024 * 1024; // Default to 2GB
-    this.bytesReceived = 0;
-    this.videoPath = path;
-    this.videoFile = '';
     this.originalFileName = '';
     this.originalFileSize = 0;
+    this.videoPath = path;
+    this.videoFile = '';
   }
-
 
   setFile(buffer, originalName) {
     this.videoBuffer = buffer;
-    this.bytesReceived = buffer.length;
     this.originalFileName = originalName;
   }
-
 
   async uploadFile() {
     try {
       const fileType = await fileTypeFromBuffer(this.videoBuffer);
 
-      if (!fileType?.ext) {
-        throw new Error('Unable to determine file type.');
+      if (!fileType || !fileType.ext) {
+        throw new Error('Unsupported file type');
       }
 
       this.videoExtension = fileType.ext;
       this.videoFile = `${this.videoPath}/${this.videoId}.${this.videoExtension}`;
-      this.originalFileName = `${this.videoId}.${this.videoExtension}`;
-      this.originalFileSize = this.bytesReceived;
+      this.originalFileSize = this.videoBuffer.length;
 
       await fs.writeFile(this.videoFile, this.videoBuffer);
 
       return true;
     } catch (err) {
-      const errorMessage = 'Something went wrong while writing the file: ' + err.message;
-      throw new Error(errorMessage);
+      throw err;
     }
   }
-
 }

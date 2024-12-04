@@ -38,20 +38,37 @@ export class DatabaseService {
   async updateConversionStatus(id, status, additionalData = {}) {
     let sql = `
       UPDATE conversions
-      SET status = ?, end_time = NOW()
+      SET status = ?, 
+          end_time = NOW()
     `;
     const params = [status];
   
     if (status === 'completed') {
-        sql += `, converted_files = ?, compressed_file_name = ?`;
-        params.push(
-          JSON.stringify(additionalData.convertedFiles || []),
-          additionalData.compressedFileName || null
-        );
-      } else if (status === 'failed') {
-        sql += `, error_message = ?`;
-        params.push(additionalData.errorMessage);
+      sql += `, 
+        converted_files = ?,
+        compressed_file_name = ?,
+        audio_removed = ?
+      `;
+      
+      // If there's an audio-removed file, add it to the converted_files array
+      let convertedFiles = additionalData.convertedFiles || [];
+      if (additionalData.audioRemoved && additionalData.audioRemovedFile) {
+        convertedFiles = [...convertedFiles, {
+          fileName: additionalData.audioRemovedFile.fileName,
+          fileSize: additionalData.audioRemovedFile.fileSize,
+          type: 'audio-removed'
+        }];
       }
+
+      params.push(
+        JSON.stringify(convertedFiles),
+        additionalData.compressedFileName || null,
+        additionalData.audioRemoved ? 1 : 0
+      );
+    } else if (status === 'failed') {
+      sql += `, error_message = ?`;
+      params.push(additionalData.errorMessage || null);
+    }
   
     sql += ` WHERE id = ?`;
     params.push(id);
