@@ -182,6 +182,8 @@ cron.schedule('0 0 * * *', async () => {
                 }
             }
 
+            
+
             // Delete compressed file if it exists
             if (file.compressed_file_name) {
                 const compressedFilePath = path.join(PATHS.MEDIA, file.compressed_file_name);
@@ -197,6 +199,22 @@ cron.schedule('0 0 * * *', async () => {
                     }
                 }
             }
+
+
+            if (file.poster_file_name) {
+                const posterFilePath = path.join(PATHS.MEDIA, file.poster_file_name);
+                
+                try {
+                  await fs.unlink(posterFilePath);
+                  logger.info(`Deleted expired poster image: ${posterFilePath}`);
+                } catch (err) {
+                  if (err.code === 'ENOENT') {
+                    logger.warn(`Poster image not found for deletion: ${posterFilePath}`);
+                  } else {
+                    logger.error(`Error deleting poster image ${posterFilePath}:`, err);
+                  }
+                }
+              }
 
             // Delete the record from the database
             try {

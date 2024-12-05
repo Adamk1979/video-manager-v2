@@ -124,6 +124,15 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        select[multiple] {
+            height: 100px;
+        }
+
+        #preview img {
+            width: 100%;
+            margin-bottom: 15px;
+        }
     </style>
 </head>
 <body>
@@ -180,6 +189,23 @@
                 <small>(Hold Ctrl/Cmd to select multiple)</small>
             </div>
 
+            <div class="checkbox-group">
+                <label>
+                    <input type="checkbox" id="generatePoster"> Generate Poster Image
+                </label>
+            </div>
+
+            <div class="form-group" id="posterOptions" style="display: none;">
+                <label for="posterFormat">Poster Format:</label>
+                <select id="posterFormat">
+                    <option value="png">PNG</option>
+                    <option value="jpg">JPG</option>
+                </select>
+
+                <label for="posterTime">Poster Time (seconds):</label>
+                <input type="number" id="posterTime" min="0" value="1">
+            </div>
+
             <button type="submit">Process Video</button>
         </form>
 
@@ -191,6 +217,8 @@
             <video controls>
                 Your browser does not support the video tag.
             </video>
+
+            <img id="posterImage" src="" alt="Poster Image" style="display: none;">
 
             <div class="result-links"></div>
         </div>
@@ -212,6 +240,12 @@
         // Show/hide conversion options
         document.getElementById('convert').addEventListener('change', function() {
             document.getElementById('conversionOptions').style.display = 
+                this.checked ? 'block' : 'none';
+        });
+
+        // Show/hide poster options
+        document.getElementById('generatePoster').addEventListener('change', function() {
+            document.getElementById('posterOptions').style.display = 
                 this.checked ? 'block' : 'none';
         });
 
@@ -266,6 +300,15 @@
                 if (selectedFormats) params.append('formatType', selectedFormats);
             }
 
+            // Add poster image generation options
+            if (document.getElementById('generatePoster').checked) {
+                params.append('generatePoster', 'true');
+                const posterFormat = document.getElementById('posterFormat').value;
+                const posterTime = document.getElementById('posterTime').value;
+                params.append('posterFormat', posterFormat);
+                params.append('posterTime', posterTime);
+            }
+
             // Show loading state
             document.getElementById('loading').style.display = 'block';
             document.getElementById('error').style.display = 'none';
@@ -277,7 +320,8 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
                 }
 
                 const result = await response.json();
@@ -326,6 +370,20 @@
                         </a>
                     `;
                 });
+            }
+
+            // Display poster image link if available
+            if (result.posterImage) {
+                linksContainer.innerHTML += `
+                    <a href="${result.posterImage.link}" class="result-link" target="_blank">
+                        Poster Image (${result.posterImage.size})
+                    </a>
+                `;
+
+                // Optionally display the poster image
+                const posterImg = document.getElementById('posterImage');
+                posterImg.src = result.posterImage.link;
+                posterImg.style.display = 'block';
             }
         }
 

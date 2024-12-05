@@ -19,7 +19,7 @@ import fs from 'fs';
 async function view(req, res) {
   try {
     const { file } = req.params;
-    console.log(`Requested file: ${file}`);
+    logger.info(`Requested file: ${file}`);
 
     const dbService = new DatabaseService();
 
@@ -42,9 +42,10 @@ async function view(req, res) {
            c.audio_removed = 1 
            AND ? LIKE CONCAT(c.id, '-noaudio.%')
          )
+         OR c.poster_file_name = ?
     `;
 
-    const [rows] = await pool.execute(sql, [file, file, file]);
+    const [rows] = await pool.execute(sql, [file, file, file, file]);
     const fileRecord = rows[0];
 
     if (!fileRecord) {
@@ -68,11 +69,17 @@ async function view(req, res) {
     const filesArray = Array.isArray(convertedFiles) ? convertedFiles : JSON.parse(convertedFiles);
     fileInfo = filesArray.find((f) => f.fileName === file);
 
-    // If not found, check if it's the compressed file
-    if (!fileInfo && fileRecord.compressed_file_name === file) {
-      fileInfo = {
-        fileName: fileRecord.compressed_file_name,
-      };
+    // If not found, check if it's the compressed file or poster file
+    if (!fileInfo) {
+      if (fileRecord.compressed_file_name === file) {
+        fileInfo = {
+          fileName: fileRecord.compressed_file_name,
+        };
+      } else if (fileRecord.poster_file_name === file) {
+        fileInfo = {
+          fileName: fileRecord.poster_file_name,
+        };
+      }
     }
 
     if (!fileInfo) {
@@ -94,7 +101,10 @@ async function view(req, res) {
       webm: 'video/webm',
       avi: 'video/x-msvideo',
       mov: 'video/quicktime',
-      mkv: 'video/x-matroska'
+      mkv: 'video/x-matroska',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg'
     }[ext] || 'application/octet-stream';
 
     // Stream the file to the client
@@ -164,16 +174,22 @@ async function process(req, res) {
     removeAudio = false, 
     formatType, 
     resolution, 
-    width 
+    width,
+    generatePoster = false, // New parameter
+    posterFormat = 'png',   // Optional: allow users to specify the image format
+    posterTime = 1          // Optional: time in seconds to capture the poster image
   } = req.query;
 
-  // Convert removeAudio to boolean if it's coming as a string
+  // Convert generatePoster to boolean if it's coming as a string
   const shouldRemoveAudio = removeAudio === 'true' || removeAudio === true;
 
+  // Convert removeAudio to boolean if it's coming as a string
+  const shouldGeneratePoster = generatePoster === 'true' || generatePoster === true;
+
   // Ensure at least one operation is specified
-  if (!compress && !convert && !shouldRemoveAudio) {
+  if (!compress && !convert && !shouldRemoveAudio && !shouldGeneratePoster) {
     return res.status(400).send({
-      error: 'At least one operation (compress, convert, or removeAudio) must be specified.',
+      error: 'At least one operation (compress, convert, removeAudio, or generatePoster) must be specified.',
     });
   }
 
@@ -198,6 +214,7 @@ async function process(req, res) {
   let audioRemovedFile = null; // To track the audio-removed file
   const convertedFiles = [];
   let compressedFile = null;
+  let posterFile = null; // To track the poster image file
 
   try {
     // Initialize the conversion record in the database
@@ -322,6 +339,23 @@ async function process(req, res) {
       }
     }
 
+    // Perform poster image generation if requested
+    if (shouldGeneratePoster) {
+      const isPosterGenerated = await videoManager.generatePosterImage(posterTime, posterFormat);
+      if (!isPosterGenerated) {
+        throw new Error('Poster image generation failed');
+      }
+
+      // Collect information about the poster image
+      posterFile = {
+        fileName: videoManager.posterFileName,
+        fileSize: videoManager.posterFileSize,
+        fileLink: linkToFile({ req, file: videoManager.posterFileName }),
+      };
+
+      logger.info(`Poster image generated at: ${videoManager.posterOutputFile}`);
+    }
+
     // Clean up temporary files
     await fileService.cleanFolder(uploadService.videoPath);
 
@@ -330,12 +364,14 @@ async function process(req, res) {
       convertedFiles,
       compressedFileName: compressedFile ? compressedFile.fileName : null,
       audioRemoved: shouldRemoveAudio,
-      audioRemovedFile: audioRemovedFile
+      audioRemovedFile: audioRemovedFile,
+      posterFileName: posterFile ? posterFile.fileName : null,
+      posterFileSize: posterFile ? posterFile.fileSize : null,
     });
 
     logger.info(`Processing job completed with ID: ${conversionId}`);
 
-    // Prepare the response with the audio-removed file information
+    // Prepare the response with the poster image information
     const response = {
       initialSize: formatBytes(uploadService.originalFileSize),
       finalSize: formatBytes(shouldRemoveAudio || compress ? videoManager.fileSize : uploadService.originalFileSize),
@@ -355,7 +391,12 @@ async function process(req, res) {
         size: formatBytes(file.fileSize),
         link: file.fileLink,
       })),
+      posterImage: posterFile ? {
+        size: formatBytes(posterFile.fileSize),
+        link: posterFile.fileLink,
+      } : null,
     };
+
 
     res.send(response);
   } catch (err) {

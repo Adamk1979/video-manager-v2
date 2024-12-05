@@ -20,6 +20,11 @@ export class VideoManager {
     this.outputFile = '';
     this.fileName = '';
     this.fileSize = 0;
+
+    // New properties for poster image
+    this.posterFileName = '';
+    this.posterOutputFile = '';
+    this.posterFileSize = 0;
   }
 
   updateProperties({ id, extension, inputFile }) {
@@ -169,6 +174,33 @@ export class VideoManager {
           reject(`Error removing audio: ${err.message}`);
         })
         .run();
+    });
+  }
+
+  async generatePosterImage(timeInSeconds = 1, format = 'png') {
+    this.posterFileName = `${this.id}-poster.${format}`;
+    this.posterOutputFile = `${this.outputPath}/${this.posterFileName}`;
+
+    return await new Promise((resolve, reject) => {
+      ffmpeg(this.inputFile)
+        .screenshots({
+          timestamps: [timeInSeconds],
+          filename: this.posterFileName,
+          folder: this.outputPath,
+          size: '1920x1080'
+        })
+        .on('end', () => {
+          try {
+            const stats = fs.statSync(this.posterOutputFile);
+            this.posterFileSize = stats.size;
+            resolve(true);
+          } catch (err) {
+            reject(`Error getting stats for poster image: ${err.message}`);
+          }
+        })
+        .on('error', (err) => {
+          reject(`Error generating poster image: ${err.message}`);
+        });
     });
   }
 }

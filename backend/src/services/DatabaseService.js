@@ -47,7 +47,9 @@ export class DatabaseService {
       sql += `, 
         converted_files = ?,
         compressed_file_name = ?,
-        audio_removed = ?
+        audio_removed = ?,
+        poster_file_name = ?,
+        poster_file_size = ?
       `;
       
       // If there's an audio-removed file, add it to the converted_files array
@@ -63,7 +65,9 @@ export class DatabaseService {
       params.push(
         JSON.stringify(convertedFiles),
         additionalData.compressedFileName || null,
-        additionalData.audioRemoved ? 1 : 0
+        additionalData.audioRemoved ? 1 : 0,
+        additionalData.posterFileName || null,
+        additionalData.posterFileSize || null
       );
     } else if (status === 'failed') {
       sql += `, error_message = ?`;
