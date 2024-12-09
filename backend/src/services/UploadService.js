@@ -21,24 +21,19 @@ export class UploadService {
     this.videoBuffer = buffer;
     this.originalFileName = originalName;
   }
-
   async uploadFile() {
-    try {
-      const fileType = await fileTypeFromBuffer(this.videoBuffer);
+    const fileType = await fileTypeFromBuffer(this.videoBuffer);
 
-      if (!fileType || !fileType.ext) {
-        throw new Error('Unsupported file type');
-      }
+    if (!fileType || !fileType.ext) {
+      throw new Error('Unsupported file type');
+    } 
 
-      this.videoExtension = fileType.ext;
-      this.videoFile = `${this.videoPath}/${this.videoId}.${this.videoExtension}`;
-      this.originalFileSize = this.videoBuffer.length;
+    this.videoExtension = fileType.ext;
+    this.videoFile = `${this.videoPath}/${this.videoId}.${this.videoExtension}`;
+    this.originalFileSize = this.videoBuffer.length;
 
-      await fs.writeFile(this.videoFile, this.videoBuffer);
+    await fs.writeFile(this.videoFile, this.videoBuffer);
 
-      return true;
-    } catch (err) {
-      throw err;
-    }
+    return true;
   }
 }

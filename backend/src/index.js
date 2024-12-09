@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 // src/index.js
 
 import 'dotenv/config';
@@ -114,7 +115,7 @@ app.get('/', (req, res) => {
 });
 
 // Error handling middleware
-app.use((err, req, res, next) => {
+app.use((err, req, res,) => {
     logger.error('Global error handler:', err);
     res.status(500).json({
         error: 'Internal server error',
@@ -232,7 +233,7 @@ cron.schedule('0 0 * * *', async () => {
 });
 
 // Error handling
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason,) => {
     logger.error('Unhandled Rejection:', reason);
 });
 
