@@ -213,19 +213,20 @@ function parseAndValidateParams(req) {
 /**
  * Handle the initial file upload and record creation.
  */
-async function initializeProcess(dbService, uploadService, ) {
+async function initializeProcess(dbService, uploadService) {
   await dbService.createConversionRecord({
     id: uploadService.videoId,
-    originalFileName: uploadService.originalFileName, 
-    originalFileSize: uploadService.originalFileSize,  
-    conversionType: 'multi_step',
+    originalFileName: '', 
+    originalFileSize: 0,  
+    conversionType: 'multi_step', // Use a valid value from the enum
   });
 
-  const uploadedFile = uploadService.uploadedFilePath;
+  const uploadedFile = uploadService.req.file;
   if (!uploadedFile) {
     throw new Error('No file uploaded');
   }
 
+  uploadService.setFile(uploadedFile.buffer, uploadedFile.originalname);
   await uploadService.uploadFile();
 
   // Update conversion to processing
@@ -328,16 +329,6 @@ async function finalizeProcess(dbService, uploadService, videoManager, audioRemo
     posterFileSize: posterFile ? posterFile.fileSize : null,
   });
 
-  // Clean up the temporary uploaded file if it still exists
-  try {
-    await fs.unlink(uploadService.uploadedFilePath);
-    logger.info(`Deleted temporary file: ${uploadService.uploadedFilePath}`);
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      logger.error(`Error deleting temporary file ${uploadService.uploadedFilePath}:`, err);
-    }
-  }
-
   const response = {
     initialSize: formatBytes(uploadService.originalFileSize),
     finalSize: formatBytes(shouldRemoveAudio || compressedFile ? videoManager.fileSize : uploadService.originalFileSize),
@@ -357,7 +348,7 @@ async function finalizeProcess(dbService, uploadService, videoManager, audioRemo
     })),
     posterImage: posterFile ? {
       size: formatBytes(posterFile.fileSize),
-      link: posterFile.link,
+      link: posterFile.fileLink,
     } : null,
   };
 
@@ -386,13 +377,7 @@ async function process(req, res) {
       posterTime
     } = parseAndValidateParams(req);
 
-    if (req.file) {
-      uploadService.setFile(req.file);
-    } else {
-      throw new Error('No file uploaded');
-    }
-
-    await initializeProcess(dbService, uploadService, req);
+    await initializeProcess(dbService, uploadService);
 
     videoManager.updateProperties({
       id: uploadService.videoId,
@@ -427,9 +412,9 @@ async function process(req, res) {
   }
 }
 
+
 export const VideoManageController = {
   view,
   viewMedia,
   process,
 };
-

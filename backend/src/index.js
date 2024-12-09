@@ -1,4 +1,3 @@
-/* eslint-disable no-undef */
 // src/index.js
 
 import 'dotenv/config';
@@ -43,23 +42,8 @@ const frontendPath = path.join(__dirname, '../../frontend');
 // Serve static files from the frontend directory
 app.use(express.static(frontendPath));
 
-// Configure Multer for disk-based file uploads
-const storage = multer.diskStorage({
-    destination: async (req, file, cb) => {
-        try {
-            await fileService.createFolder({ MEDIA: PATHS.MEDIA, TMP: PATHS.TMP });
-            cb(null, PATHS.TMP);
-        } catch (err) {
-            cb(err, PATHS.TMP);
-        }
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-        const extension = path.extname(file.originalname);
-        cb(null, `${uniqueSuffix}${extension}`);
-    }
-});
-
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
 const upload = multer({ 
     storage,
     limits: {
@@ -107,17 +91,21 @@ app.get('/view/:file', VideoManageController.view);
 app.post('/process', 
     heavyLimiter, 
     upload.single('file'), 
-    async (req, res,) => {
-        try {
-            await VideoManageController.process(req, res);
-        } catch (err) {
-            logger.error('Error processing the video:', err);
-            res.status(500).json({
-                error: 'Internal server error',
-                message: err.message
+    (err, req, res, next) => {
+        if (err instanceof multer.MulterError) {
+            // A Multer error occurred when uploading.
+            return res.status(400).json({
+                error: `Upload error: ${err.message}`
+            });
+        } else if (err) {
+            // An unknown error occurred.
+            return res.status(500).json({
+                error: `Server error: ${err.message}`
             });
         }
-    }
+        next();
+    },
+    VideoManageController.process
 );
 
 // Serve the frontend for the root route
@@ -126,7 +114,7 @@ app.get('/', (req, res) => {
 });
 
 // Error handling middleware
-app.use((err, req, res,) => {
+app.use((err, req, res, next) => {
     logger.error('Global error handler:', err);
     res.status(500).json({
         error: 'Internal server error',
@@ -244,7 +232,7 @@ cron.schedule('0 0 * * *', async () => {
 });
 
 // Error handling
-process.on('unhandledRejection', (reason,) => {
+process.on('unhandledRejection', (reason, promise) => {
     logger.error('Unhandled Rejection:', reason);
 });
 
