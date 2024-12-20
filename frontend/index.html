@@ -393,6 +393,174 @@
             errorDiv.style.display = 'block';
             document.getElementById('loading').style.display = 'none';
         }
+
+        async function checkStatus(uuid) {
+            try {
+                const response = await fetch(`/status/${uuid}`);
+                const result = await response.json();
+
+                if (result.status === 'completed') {
+                    displayProcessedFiles(result);
+                } else if (result.status === 'failed') {
+                    showError(result.error);
+                } else {
+                    // Handle other statuses if necessary
+                }
+            } catch (error) {
+                showError('Error fetching status.');
+                console.error(error);
+            }
+        }
+
+        function displayProcessedFiles(result) {
+            const linksContainer = document.getElementById('processedFiles');
+            linksContainer.innerHTML = '';
+
+            // Display original and final sizes
+            document.getElementById('initialSize').textContent = result.originalFileSize || 'N/A';
+            document.getElementById('finalSize').textContent = result.finalFileSize || 'N/A';
+
+            // Display compressed file link
+            if (result.compressedFileName) {
+                linksContainer.innerHTML += `
+                    <a href="/view/${result.compressedFileName}" class="result-link" target="_blank">
+                        Compressed Version (${formatBytes(result.compressedFileSize)})
+                    </a>
+                `;
+            }
+
+            // Display audio-removed file link if available
+            if (result.audioRemovedFile) {
+                linksContainer.innerHTML += `
+                    <a href="/view/${result.audioRemovedFile.fileName}" class="result-link" target="_blank">
+                        Audio Removed Version (${formatBytes(result.audioRemovedFile.fileSize)})
+                    </a>
+                `;
+            }
+
+            // Display converted file links if available
+            if (result.convertedFiles && result.convertedFiles.length > 0) {
+                result.convertedFiles.forEach(file => {
+                    linksContainer.innerHTML += `
+                        <a href="/view/${file.fileName}" class="result-link" target="_blank">
+                            ${file.format.toUpperCase()} Version (${formatBytes(file.fileSize)})
+                        </a>
+                    `;
+                });
+            }
+
+            // Display poster image link if available
+            if (result.posterFileName) {
+                linksContainer.innerHTML += `
+                    <a href="/view/${result.posterFileName}" class="result-link" target="_blank">
+                        Poster Image (${formatBytes(result.posterFileSize)})
+                    </a>
+                `;
+
+                // Optionally display the poster image
+                const posterImg = document.getElementById('posterImage');
+                posterImg.src = `/view/${result.posterFileName}`;
+                posterImg.style.display = 'block';
+            }
+
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        // Example usage after uploading a file
+        async function uploadFile(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const uuid = await submitForm(formData);
+            checkStatus(uuid);
+        }
+
+        async function submitForm(formData) {
+            const response = await fetch('/process', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            if (result.uuid) {
+                logger.info(`Uploaded successfully. UUID: ${result.uuid}`);
+                return result.uuid;
+            } else {
+                showError(result.error || 'Upload failed.');
+                throw new Error(result.error || 'Upload failed.');
+            }
+        }
+
+        // Attach event listener to your form
+        document.getElementById('uploadForm').addEventListener('submit', uploadFile);
+
+        async function handleProcessResponse(response) {
+            const linksContainer = document.querySelector('.result-links');
+            linksContainer.innerHTML = '<h3>Processed Files:</h3>';
+
+            // Initial and Final Sizes
+            linksContainer.innerHTML += `
+                <p>Initial Size: ${formatBytes(response.initialSize)}</p>
+                <p>Final Size: ${formatBytes(response.finalSize)}</p>
+            `;
+
+            // Files
+            response.files.forEach(file => {
+                linksContainer.innerHTML += `
+                    <a href="${file.link}" class="result-link" target="_blank">
+                        ${file.format.toUpperCase()} Version (${formatBytes(file.fileSize)})
+                    </a>
+                `;
+            });
+
+            // Compressed File
+            if (response.compressed && response.compressed.link) {
+                linksContainer.innerHTML += `
+                    <a href="${response.compressed.link}" class="result-link" target="_blank">
+                        Compressed Version (${formatBytes(response.compressed.fileSize || 0)})
+                    </a>
+                `;
+            }
+
+            // Poster Image
+            if (response.poster && response.poster.link) {
+                linksContainer.innerHTML += `
+                    <a href="${response.poster.link}" class="result-link" target="_blank">
+                        Poster Image (${formatBytes(response.poster.fileSize)})
+                    </a>
+                `;
+
+                // Optionally display the poster image
+                const posterImg = document.getElementById('posterImage');
+                posterImg.src = response.poster.link;
+                posterImg.style.display = 'block';
+            }
+        }
+
+        // Example usage after receiving the response
+        fetch('/process', {
+            method: 'POST',
+            // ... your fetch configuration
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'completed') {
+                    handleProcessResponse(data);
+                } else {
+                    // Handle errors or other statuses
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
     </script>
 </body>
 </html> 

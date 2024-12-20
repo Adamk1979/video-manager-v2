@@ -8,6 +8,7 @@
   "type": "module",
   "scripts": {
     "start": "nodemon src/index.js",
+    "worker": "node src/worker/worker.js",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,css,scss,md}\"",
     "lint": "eslint ."
   },

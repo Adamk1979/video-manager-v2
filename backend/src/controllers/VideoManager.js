@@ -1,10 +1,9 @@
-//src/controllers/VideoManager.js
+// backend/src/controllers/VideoManager.js
 
 import { UploadService } from '../services/UploadService.js';
 import { VideoManager } from '../services/VideoManager.js';
 import { linkToFile } from '../utils/linkToFile.js';
 import { fileService } from '../services/FileService.js';
-import { formatBytes } from '../utils/formatBytes.js';
 import { PATHS } from '../utils/constants.js';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { pool } from '../utils/dbConfig.js';
@@ -21,7 +20,7 @@ async function view(req, res) {
     const { file } = req.params;
     logger.info(`Requested file: ${file}`);
     
-    // Updated SQL query to also check for files in the converted_files array
+    // SQL query to check for files in converted_files array or compressed/poster files
     const sql = `
       SELECT c.* 
       FROM conversions c 
@@ -70,13 +69,9 @@ async function view(req, res) {
     // If not found, check if it's the compressed file or poster file
     if (!fileInfo) {
       if (fileRecord.compressed_file_name === file) {
-        fileInfo = {
-          fileName: fileRecord.compressed_file_name,
-        };
+        fileInfo = { fileName: fileRecord.compressed_file_name };
       } else if (fileRecord.poster_file_name === file) {
-        fileInfo = {
-          fileName: fileRecord.poster_file_name,
-        };
+        fileInfo = { fileName: fileRecord.poster_file_name };
       }
     }
 
@@ -117,14 +112,11 @@ async function view(req, res) {
       res.status(404).send({ message: 'File not found' });
     });
 
-    // Set appropriate headers
+    // Set headers
     res.setHeader('Content-Type', contentType);
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${fileInfo.fileName}"`
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.fileName}"`);
 
-    // Add a custom header to indicate if audio was removed
+    // Add a custom header if audio was removed
     if (fileRecord.audio_removed) {
       res.setHeader('X-Audio-Removed', 'true');
     }
@@ -135,7 +127,6 @@ async function view(req, res) {
     res.status(500).send({ message: 'Internal server error' });
   }
 }
-
 
 /**
  * Controller function to list all media files.
@@ -153,268 +144,225 @@ async function viewMedia(req, res) {
 }
 
 
-
 /**
- * Controller function to handle video format conversion.
- * @param {object} req - Express request object.
- * @param {object} res - Express response object.
+ * The new process method:
+ * - Validates file
+ * - Saves it temporarily
+ * - Creates a pending job in the DB
+ * - Returns UUID
  */
-
-function parseAndValidateParams(req) {
-  const { 
-    compress = false, 
-    convert = false, 
-    removeAudio = false, 
-    formatType, 
-    resolution, 
+function extractOptionsFromRequest(req, videoExtension) {
+  const {
+    compress = false,
+    convert = false,
+    removeAudio = false,
+    formatType,
+    resolution,
     width,
     generatePoster = false,
     posterFormat = 'png',
     posterTime = 1
   } = req.query;
 
-  const shouldRemoveAudio = removeAudio === 'true' || removeAudio === true;
-  const shouldGeneratePoster = generatePoster === 'true' || generatePoster === true;
-
-  // Validate compression parameters
-  if (compress) {
-    const validResolutions = ['1080p', '720p', '480p', 'custom'];
-    if (resolution && !validResolutions.includes(resolution)) {
-      throw new Error(`Invalid resolution specified. Valid options are ${validResolutions.join(', ')}`);
-    }
-    if (resolution === 'custom' && (!width || isNaN(width))) {
-      throw new Error('Custom width must be a valid number');
-    }
-  }
-
-  // Validate conversion parameters
-  const formatTypes = convert ? formatType?.split(',').map((f) => f.trim()) : [];
-  if (convert && formatTypes.length === 0) {
-    throw new Error('No format types specified for conversion.');
-  }
-
-  if (!compress && !convert && !shouldRemoveAudio && !shouldGeneratePoster) {
-    throw new Error('At least one operation (compress, convert, removeAudio, or generatePoster) must be specified.');
-  }
-
   return {
-    shouldRemoveAudio,
-    compress,
-    convert,
-    formatTypes,
-    resolution,
-    width,
-    shouldGeneratePoster,
-    posterFormat,
-    posterTime
+    compress: compress === 'true' || compress === true,
+    convert: convert === 'true' || convert === true,
+    removeAudio: removeAudio === 'true' || removeAudio === true,
+    formatType: formatType || null,
+    resolution: resolution || null,
+    width: width || null,
+    generatePoster: generatePoster === 'true' || generatePoster === true,
+    posterFormat: posterFormat || 'png',
+    posterTime: parseFloat(posterTime),
+    videoExtension: videoExtension || 'mp4' // Ensure videoExtension is included
   };
 }
 
 /**
- * Handle the initial file upload and record creation.
- */
-async function initializeProcess(dbService, uploadService) {
-  await dbService.createConversionRecord({
-    id: uploadService.videoId,
-    originalFileName: '', 
-    originalFileSize: 0,  
-    conversionType: 'multi_step', // Use a valid value from the enum
-  });
-
-  const uploadedFile = uploadService.req.file;
-  if (!uploadedFile) {
-    throw new Error('No file uploaded');
-  }
-
-  uploadService.setFile(uploadedFile.buffer, uploadedFile.originalname);
-  await uploadService.uploadFile();
-
-  // Update conversion to processing
-  await dbService.updateConversionStatus(uploadService.videoId, 'processing', {
-    originalFileName: uploadService.originalFileName,
-    originalFileSize: uploadService.originalFileSize,
-  });
-}
-
-/**
- * Perform audio removal if requested.
- */
-async function performAudioRemoval(videoManager, shouldRemoveAudio, req) {
-  let audioRemovedFile = null;
-  if (shouldRemoveAudio) {
-    const isAudioRemoved = await videoManager.removeAudio();
-    if (!isAudioRemoved) throw new Error('Audio removal failed');
-
-    audioRemovedFile = {
-      fileName: videoManager.fileName,
-      fileSize: videoManager.fileSize,
-      fileLink: linkToFile({ req, file: videoManager.fileName }),
-    };
-  }
-  return audioRemovedFile;
-}
-
-/**
- * Perform compression if requested.
- */
-async function performCompression(videoManager, compress, resolution, width, req) {
-  let compressedFile = null;
-  if (compress) {
-    const isCompressed = await videoManager.compress(resolution, width);
-    if (!isCompressed) throw new Error('Compression failed');
-
-    compressedFile = {
-      fileName: videoManager.fileName,
-      fileSize: videoManager.fileSize,
-      fileLink: linkToFile({ req, file: videoManager.fileName }),
-    };
-  }
-  return compressedFile;
-}
-
-/**
- * Perform format conversion if requested.
- */
-async function performConversion(videoManager, convert, formatTypes, req) {
-  const convertedFiles = [];
-  if (convert) {
-    for (const format of formatTypes) {
-      const tempVideoManager = new VideoManager({
-        id: `${videoManager.id}-${format}`,
-        extension: format,
-        inputFile: videoManager.inputFile,
-      });
-      const isConverted = await tempVideoManager.convert(format);
-      if (!isConverted) throw new Error(`Conversion to ${format} failed`);
-
-      convertedFiles.push({
-        format,
-        fileName: tempVideoManager.fileName,
-        fileSize: tempVideoManager.fileSize,
-        fileLink: linkToFile({ req, file: tempVideoManager.fileName }),
-      });
-    }
-  }
-  return convertedFiles;
-}
-
-/**
- * Generate poster image if requested.
- */
-async function generatePosterIfRequested(videoManager, shouldGeneratePoster, posterFormat, posterTime, req) {
-  let posterFile = null;
-  if (shouldGeneratePoster) {
-    const isPosterGenerated = await videoManager.generatePosterImage(posterTime, posterFormat);
-    if (!isPosterGenerated) throw new Error('Poster image generation failed');
-
-    posterFile = {
-      fileName: videoManager.posterFileName,
-      fileSize: videoManager.posterFileSize,
-      fileLink: linkToFile({ req, file: videoManager.posterFileName }),
-    };
-  }
-  return posterFile;
-}
-
-/**
- * Update the conversion record as completed and prepare the final response.
- */
-async function finalizeProcess(dbService, uploadService, videoManager, audioRemovedFile, compressedFile, convertedFiles, posterFile, shouldRemoveAudio, req, res) {
-  await dbService.updateConversionStatus(uploadService.videoId, 'completed', {
-    convertedFiles,
-    compressedFileName: compressedFile ? compressedFile.fileName : null,
-    audioRemoved: shouldRemoveAudio,
-    audioRemovedFile: audioRemovedFile,
-    posterFileName: posterFile ? posterFile.fileName : null,
-    posterFileSize: posterFile ? posterFile.fileSize : null,
-  });
-
-  const response = {
-    initialSize: formatBytes(uploadService.originalFileSize),
-    finalSize: formatBytes(shouldRemoveAudio || compressedFile ? videoManager.fileSize : uploadService.originalFileSize),
-    audioRemoved: shouldRemoveAudio,
-    audioRemovedFile: audioRemovedFile ? {
-      size: formatBytes(audioRemovedFile.fileSize),
-      link: audioRemovedFile.fileLink
-    } : null,
-    compressedFile: compressedFile ? {
-      size: formatBytes(compressedFile.fileSize),
-      link: compressedFile.fileLink,
-    } : null,
-    convertedFiles: convertedFiles.map((file) => ({
-      format: file.format,
-      size: formatBytes(file.fileSize),
-      link: file.fileLink,
-    })),
-    posterImage: posterFile ? {
-      size: formatBytes(posterFile.fileSize),
-      link: posterFile.fileLink,
-    } : null,
-  };
-
-  res.send(response);
-}
-
-/**
- * The main process controller function, now more readable.
+ * The new process method:
+ * - Validates file
+ * - Saves it temporarily
+ * - Creates a pending job in the DB
+ * - Returns UUID
  */
 async function process(req, res) {
-  const dbService = new DatabaseService();
-  const uploadService = new UploadService({ path: PATHS.TMP });
-  uploadService.req = req; // Pass request to UploadService if needed
-  const videoManager = new VideoManager({});
-
   try {
-    const {
-      shouldRemoveAudio,
-      compress,
-      convert,
-      formatTypes,
-      resolution,
-      width,
-      shouldGeneratePoster,
-      posterFormat,
-      posterTime
-    } = parseAndValidateParams(req);
+    const dbService = new DatabaseService();
+    const uploadService = new UploadService({ path: PATHS.TMP });
+    uploadService.req = req;
 
-    await initializeProcess(dbService, uploadService);
+    const uploadedFile = req.file;
+    if (!uploadedFile) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
 
-    videoManager.updateProperties({
+    // Save the file to TMP
+    uploadService.setFile(uploadedFile.buffer, uploadedFile.originalname);
+    await uploadService.uploadFile();
+
+    // Extract options, including videoExtension
+    const options = extractOptionsFromRequest(req, uploadService.videoExtension);
+
+    // Create a record with status pending
+    await dbService.createConversionRecord({
       id: uploadService.videoId,
-      extension: uploadService.videoExtension,
-      inputFile: uploadService.videoFile
+      originalFileName: uploadService.originalFileName,
+      originalFileSize: uploadService.originalFileSize,
+      conversionType: 'multi_step',
+      status: 'pending',
+      options: JSON.stringify(options) // Ensure options are stored as JSON string
     });
 
-    const audioRemovedFile = await performAudioRemoval(videoManager, shouldRemoveAudio, req);
-    if (audioRemovedFile) {
-      videoManager.updateProperties({ inputFile: videoManager.outputFile });
-    }
+    // Return the UUID to the client
+    return res.json({ uuid: uploadService.videoId });
 
-    const compressedFile = await performCompression(videoManager, compress, resolution, width, req);
-    if (compressedFile) {
-      videoManager.updateProperties({ inputFile: videoManager.outputFile });
-    }
-
-    const convertedFiles = await performConversion(videoManager, convert, formatTypes, req);
-    // If conversions occurred, last conversion step updated inputFile implicitly
-
-    const posterFile = await generatePosterIfRequested(videoManager, shouldGeneratePoster, posterFormat, posterTime, req);
-
-    await fileService.cleanFolder(uploadService.videoPath);
-
-    await finalizeProcess(dbService, uploadService, videoManager, audioRemovedFile, compressedFile, convertedFiles, posterFile, shouldRemoveAudio, req, res);
-  } catch (err) {
-    await dbService.updateConversionStatus(uploadService.videoId, 'failed', {
-      errorMessage: err.message,
-    });
-    logger.error(`Processing failed for ID: ${uploadService.videoId}`, err);
-    res.status(500).send({ error: err.message });
+  } catch (error) {
+    logger.error('Error in process controller:', error);
+    return res.status(500).json({ error: error.message });
   }
 }
 
+/**
+ * Status method: Frontend polls this endpoint with the UUID
+ * to get the current status of the job.
+ */
+async function status(req, res) {
+  const { uuid } = req.params;
+
+  function createFileLink(req, fileName) {
+    const protocol = req.protocol;
+    const host = req.get('host');
+    return `${protocol}://${host}/view/${fileName}`;
+  }
+
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        status, 
+        progress, 
+        converted_files, 
+        compressed_file_name, 
+        compressed_file_size,
+        audio_removed, 
+        audio_removed_file, 
+        poster_file_name, 
+        poster_file_size,
+        original_file_size
+      FROM conversions 
+      WHERE id = ? 
+      LIMIT 1
+    `, [uuid]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = rows[0];
+
+    logger.info(`Data Types for Job ${uuid}:`);
+    logger.info(`converted_files type: ${typeof job.converted_files}`);
+    logger.info(`audio_removed_file type: ${typeof job.audio_removed_file}`);
+
+    if (job.status === 'pending' || job.status === 'processing') {
+      return res.json({ 
+        status: job.status, 
+        progress: job.progress,
+        initialSize: job.original_file_size 
+      });
+    } else if (job.status === 'completed') {
+      // Handle convertedFiles
+      let convertedFiles = [];
+      if (job.converted_files) {
+        if (typeof job.converted_files === 'string') {
+          try {
+            convertedFiles = JSON.parse(job.converted_files);
+          } catch (e) {
+            logger.error(`Error parsing converted_files for job ${uuid}:`, e);
+            convertedFiles = [];
+          }
+        } else if (typeof job.converted_files === 'object') {
+          convertedFiles = job.converted_files;
+        }
+      }
+
+      // Add link field to converted files
+      convertedFiles = convertedFiles.map(file => ({
+        ...file,
+        link: createFileLink(req, file.fileName)
+      }));
+
+      // Handle audioRemovedFile
+      let audioRemovedFile = null;
+      if (job.audio_removed_file) {
+        if (typeof job.audio_removed_file === 'string') {
+          try {
+            audioRemovedFile = JSON.parse(job.audio_removed_file);
+          } catch (e) {
+            logger.error(`Error parsing audio_removed_file for job ${uuid}:`, e);
+          }
+        } else if (typeof job.audio_removed_file === 'object') {
+          audioRemovedFile = job.audio_removed_file;
+        }
+      }
+
+      if (audioRemovedFile) {
+        audioRemovedFile.link = createFileLink(req, audioRemovedFile.fileName);
+      }
+
+      // Calculate the final size
+      let finalSize = 0;
+      convertedFiles.forEach(file => {
+        finalSize += file.fileSize || 0;
+      });
+      if (audioRemovedFile && audioRemovedFile.fileSize) {
+        finalSize += audioRemovedFile.fileSize;
+      }
+      if (job.poster_file_size) {
+        finalSize += job.poster_file_size;
+      }
+      if (job.compressed_file_size) {
+        finalSize += job.compressed_file_size;
+      }
+
+      const compressed = job.compressed_file_name ? {
+        fileName: job.compressed_file_name,
+        fileSize: job.compressed_file_size,
+        link: createFileLink(req, job.compressed_file_name)
+      } : null;
+
+      const poster = job.poster_file_name ? {
+        fileName: job.poster_file_name,
+        fileSize: job.poster_file_size,
+        link: createFileLink(req, job.poster_file_name)
+      } : null;
+
+      return res.json({
+        status: 'completed',
+        progress: 100,
+        initialSize: job.original_file_size,
+        finalSize: finalSize,
+        files: convertedFiles,
+        compressed,
+        poster,
+        audioRemovedFile
+      });
+    } else if (job.status === 'failed') {
+      return res.json({ 
+        status: 'failed', 
+        error: job.error_message 
+      });
+    } else {
+      return res.status(500).json({ error: 'Invalid job status.' });
+    }
+  } catch (error) {
+    logger.error('Error fetching status:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
 
 export const VideoManageController = {
   view,
   viewMedia,
   process,
+  status
 };

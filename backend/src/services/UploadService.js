@@ -5,6 +5,7 @@ import { v4 as uuid4 } from 'uuid';
 import { PATHS } from '../utils/constants.js';
 import { fileTypeFromBuffer } from 'file-type';
 import { Buffer } from 'buffer';
+import logger from '../logger/logger.js';
 
 export class UploadService {
   constructor({ path = PATHS.TMP }) {
@@ -31,6 +32,8 @@ export class UploadService {
     this.videoExtension = fileType.ext;
     this.videoFile = `${this.videoPath}/${this.videoId}.${this.videoExtension}`;
     this.originalFileSize = this.videoBuffer.length;
+
+    logger.info(`Uploading file to: ${this.videoFile}`);
 
     await fs.writeFile(this.videoFile, this.videoBuffer);
 

@@ -1,5 +1,3 @@
-// src/services/DatabaseService.js
-
 import { pool } from '../utils/dbConfig.js';
 import logger from '../logger/logger.js';
 
@@ -9,20 +7,21 @@ export class DatabaseService {
   async createConversionRecord(conversionData) {
     const sql = `
       INSERT INTO conversions
-      (id, original_file_name, original_file_size, conversion_type, status, start_time, expires_at)
-      VALUES (?, ?, ?, ?, ?, NOW(), ?)
+      (id, original_file_name, original_file_size, conversion_type, status, start_time, expires_at, options, progress)
+      VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, 0)
     `;
   
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // Set expiration date to 7 days from now
+    expiresAt.setDate(expiresAt.getDate() + 7);
   
     const params = [
       conversionData.id,
-      conversionData.originalFileName,
-      conversionData.originalFileSize,
+      conversionData.originalFileName || null,
+      conversionData.originalFileSize || 0,
       conversionData.conversionType,
-      'pending',
+      conversionData.status || 'pending',
       expiresAt,
+      conversionData.options || null
     ];
   
     try {
@@ -33,7 +32,6 @@ export class DatabaseService {
       throw err;
     }
   }
-  
 
   async updateConversionStatus(id, status, additionalData = {}) {
     let sql = `
@@ -42,30 +40,24 @@ export class DatabaseService {
           end_time = NOW()
     `;
     const params = [status];
-  
+
     if (status === 'completed') {
-      sql += `, 
+      sql += `,
         converted_files = ?,
         compressed_file_name = ?,
+        compressed_file_size = ?,
         audio_removed = ?,
+        audio_removed_file = ?,
         poster_file_name = ?,
         poster_file_size = ?
       `;
       
-      // If there's an audio-removed file, add it to the converted_files array
-      let convertedFiles = additionalData.convertedFiles || [];
-      if (additionalData.audioRemoved && additionalData.audioRemovedFile) {
-        convertedFiles = [...convertedFiles, {
-          fileName: additionalData.audioRemovedFile.fileName,
-          fileSize: additionalData.audioRemovedFile.fileSize,
-          type: 'audio-removed'
-        }];
-      }
-
       params.push(
-        JSON.stringify(convertedFiles),
+        JSON.stringify(additionalData.convertedFiles || []),
         additionalData.compressedFileName || null,
+        additionalData.compressedFileSize || null,
         additionalData.audioRemoved ? 1 : 0,
+        additionalData.audioRemovedFile ? JSON.stringify(additionalData.audioRemovedFile) : null,
         additionalData.posterFileName || null,
         additionalData.posterFileSize || null
       );
@@ -73,10 +65,10 @@ export class DatabaseService {
       sql += `, error_message = ?`;
       params.push(additionalData.errorMessage || null);
     }
-  
+
     sql += ` WHERE id = ?`;
     params.push(id);
-  
+
     try {
       await pool.execute(sql, params);
       logger.info(`Updated conversion ID: ${id} to status: ${status}`);
@@ -85,7 +77,6 @@ export class DatabaseService {
       throw err;
     }
   }
-  
 
   async getExpiredFiles() {
     const sql = `

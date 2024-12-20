@@ -1,10 +1,5 @@
-//src/services/VideoManager.js
-
-
 import fs from 'fs';
-
 import { PATHS } from '../utils/constants.js';
-
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import logger from '../logger/logger.js';
@@ -21,7 +16,6 @@ export class VideoManager {
     this.fileName = '';
     this.fileSize = 0;
 
-    // New properties for poster image
     this.posterFileName = '';
     this.posterOutputFile = '';
     this.posterFileSize = 0;
@@ -38,11 +32,8 @@ export class VideoManager {
 
     this.fileName = `${this.id}.${this.extension}`;
     this.outputFile = `${this.outputPath}/${this.fileName}`;
-
-    // Log the fileName and outputFile for debugging
     logger.info(`Compressing to file: ${this.outputFile}`);
 
-    // Map resolution options to actual sizes
     const resolutionMap = {
       '1080p': '1920x1080',
       '720p': '1280x720',
@@ -52,7 +43,6 @@ export class VideoManager {
     let sizeOption;
 
     if (resolution === 'custom' && customWidth) {
-      // Calculate aspect ratio based on the input video
       const aspectRatio = await this.getAspectRatio();
       const numericWidth = parseInt(customWidth, 10);
       const customHeight = Math.round(numericWidth / aspectRatio);
@@ -60,7 +50,6 @@ export class VideoManager {
     } else if (resolutionMap[resolution]) {
       sizeOption = resolutionMap[resolution];
     } else {
-      // Default to original size if resolution is not specified or invalid
       sizeOption = null;
     }
 
@@ -72,7 +61,7 @@ export class VideoManager {
       }
 
       command
-        .videoCodec('libx264') // Use H.264 codec for better compression
+        .videoCodec('libx264')
         .output(this.outputFile)
         .on('end', () => {
           try {
@@ -93,7 +82,6 @@ export class VideoManager {
     });
   }
 
-  // Helper method to get the aspect ratio of the input video
   async getAspectRatio() {
     return await new Promise((resolve, reject) => {
       ffmpeg.ffprobe(this.inputFile, (err, metadata) => {
@@ -112,9 +100,8 @@ export class VideoManager {
     });
   }
   
-
   async convert(formatType) {
-    this.fileName = `${this.id}-${Date.now()}.${formatType}`; // Ensure unique filename
+    this.fileName = `${this.id}-${Date.now()}.${formatType}`;
     this.outputFile = `${this.outputPath}/${this.fileName}`;
   
     logger.info(`Starting conversion to format: ${formatType} on file: ${this.inputFile}`);
