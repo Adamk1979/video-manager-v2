@@ -133,6 +133,62 @@
             width: 100%;
             margin-bottom: 15px;
         }
+
+        /* Add new styles for progress bar */
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            margin: 15px 0;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #007bff;
+            width: 0%;
+            transition: width 0.3s ease-in-out;
+        }
+
+        .status-message {
+            text-align: center;
+            margin: 10px 0;
+            color: #666;
+            display: none;
+        }
+
+        .processing-details {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+
+        .processing-details small {
+            display: block;
+            color: #6c757d;
+            margin-top: 5px;
+        }
+
+        .status-message {
+            text-align: center;
+            margin: 10px 0;
+            color: #666;
+            font-weight: 500;
+            display: none;
+        }
+
+        .error {
+            background-color: #fff3f3;
+            border: 1px solid #dc3545;
+            color: #dc3545;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -211,6 +267,12 @@
 
         <div id="error" class="error"></div>
         <div id="loading" class="loading"></div>
+        
+        <!-- Add progress bar and status message -->
+        <div id="progressBar" class="progress-bar">
+            <div id="progressBarFill" class="progress-bar-fill"></div>
+        </div>
+        <div id="statusMessage" class="status-message"></div>
 
         <div id="preview">
             <h2>Original Video Preview</h2>
@@ -259,7 +321,7 @@
             }
         });
 
-        // Handle form submission
+        // Updated form submission handler
         document.getElementById('uploadForm').addEventListener('submit', async function(e) {
             e.preventDefault();
 
@@ -271,49 +333,57 @@
                 return;
             }
 
-            formData.append('file', file);
-
-            // Build query parameters
-            const params = new URLSearchParams();
-            
-            if (document.getElementById('removeAudio').checked) {
-                params.append('removeAudio', 'true');
-            }
-
-            if (document.getElementById('compress').checked) {
-                params.append('compress', 'true');
-                const resolution = document.getElementById('resolution').value;
-                params.append('resolution', resolution);
-                
-                if (resolution === 'custom') {
-                    const width = document.getElementById('width').value;
-                    if (width) params.append('width', width);
-                }
-            }
-
-            if (document.getElementById('convert').checked) {
-                params.append('convert', 'true');
-                const formatSelect = document.getElementById('formatType');
-                const selectedFormats = Array.from(formatSelect.selectedOptions)
-                    .map(option => option.value)
-                    .join(',');
-                if (selectedFormats) params.append('formatType', selectedFormats);
-            }
-
-            // Add poster image generation options
-            if (document.getElementById('generatePoster').checked) {
-                params.append('generatePoster', 'true');
-                const posterFormat = document.getElementById('posterFormat').value;
-                const posterTime = document.getElementById('posterTime').value;
-                params.append('posterFormat', posterFormat);
-                params.append('posterTime', posterTime);
-            }
-
-            // Show loading state
+            // Show loading state and progress bar
             document.getElementById('loading').style.display = 'block';
             document.getElementById('error').style.display = 'none';
+            document.getElementById('progressBar').style.display = 'block';
+            document.getElementById('statusMessage').style.display = 'block';
+            document.getElementById('statusMessage').textContent = 'Uploading file...';
+            document.getElementById('progressBarFill').style.width = '0%';
+
+            // Disable the submit button during upload
+            const submitButton = this.querySelector('button[type="submit"]');
+            submitButton.disabled = true;
 
             try {
+                formData.append('file', file);
+                
+                // Build query parameters
+                const params = new URLSearchParams();
+                
+                if (document.getElementById('removeAudio').checked) {
+                    params.append('removeAudio', 'true');
+                }
+
+                if (document.getElementById('compress').checked) {
+                    params.append('compress', 'true');
+                    const resolution = document.getElementById('resolution').value;
+                    params.append('resolution', resolution);
+                    
+                    if (resolution === 'custom') {
+                        const width = document.getElementById('width').value;
+                        if (width) params.append('width', width);
+                    }
+                }
+
+                if (document.getElementById('convert').checked) {
+                    params.append('convert', 'true');
+                    const formatSelect = document.getElementById('formatType');
+                    const selectedFormats = Array.from(formatSelect.selectedOptions)
+                        .map(option => option.value)
+                        .join(',');
+                    if (selectedFormats) params.append('formatType', selectedFormats);
+                }
+
+                if (document.getElementById('generatePoster').checked) {
+                    params.append('generatePoster', 'true');
+                    const posterFormat = document.getElementById('posterFormat').value;
+                    const posterTime = document.getElementById('posterTime').value;
+                    params.append('posterFormat', posterFormat);
+                    params.append('posterTime', posterTime);
+                }
+
+                // Initial upload to get UUID
                 const response = await fetch(`/process?${params.toString()}`, {
                     method: 'POST',
                     body: formData
@@ -324,243 +394,182 @@
                     throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
                 }
 
-                const result = await response.json();
-                displayResults(result);
+                const { uuid } = await response.json();
+                document.getElementById('statusMessage').textContent = 'File uploaded, waiting for processing...';
+                
+                // Start polling for status
+                await pollStatus(uuid);
             } catch (error) {
                 showError(error.message);
             } finally {
-                document.getElementById('loading').style.display = 'none';
+                // Re-enable the submit button
+                submitButton.disabled = false;
             }
         });
 
+        // Update the pollStatus function for better status messaging
+        async function pollStatus(uuid) {
+            const progressBarFill = document.getElementById('progressBarFill');
+            const statusMessage = document.getElementById('statusMessage');
+            let retryCount = 0;
+            let lastProgress = 0;
+            const maxRetries = 60; // 2 minutes maximum waiting time
+            
+            while (retryCount < maxRetries) {
+                try {
+                    const response = await fetch(`/status/${uuid}`);
+                    const result = await response.json();
+
+                    // Update progress bar
+                    progressBarFill.style.width = `${result.progress || 0}%`;
+                    
+                    if (result.status === 'completed') {
+                        statusMessage.textContent = 'Processing completed successfully!';
+                        document.getElementById('loading').style.display = 'none';
+                        displayResults(result);
+                        break;
+                    } else if (result.status === 'failed') {
+                        throw new Error(result.error || 'Processing failed');
+                    } else if (result.status === 'pending') {
+                        statusMessage.textContent = 'Waiting for worker to pick up the job...';
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    } else if (result.status === 'processing') {
+                        // Provide more detailed status messages based on progress
+                        if (result.progress === 0) {
+                            statusMessage.textContent = 'Starting video processing...';
+                        } else if (result.progress > lastProgress) {
+                            // Update status message based on progress milestones
+                            switch(true) {
+                                case result.progress <= 20:
+                                    statusMessage.textContent = 'Removing audio from video...';
+                                    break;
+                                case result.progress <= 40:
+                                    statusMessage.textContent = 'Compressing video...';
+                                    break;
+                                case result.progress <= 60:
+                                    statusMessage.textContent = 'Converting video format...';
+                                    break;
+                                case result.progress <= 80:
+                                    statusMessage.textContent = 'Generating poster image...';
+                                    break;
+                                case result.progress < 100:
+                                    statusMessage.textContent = 'Finalizing processing...';
+                                    break;
+                            }
+                        }
+                        lastProgress = result.progress;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                    retryCount++;
+                } catch (error) {
+                    showError(error.message);
+                    break;
+                }
+            }
+
+            if (retryCount >= maxRetries) {
+                showError('Processing timeout - please try again later');
+            }
+        }
+
+        // Updated displayResults function
         function displayResults(result) {
             const linksContainer = document.querySelector('.result-links');
             linksContainer.innerHTML = '<h3>Processed Files:</h3>';
 
-            // Display initial and final sizes
-            linksContainer.innerHTML += `
-                <p>Initial Size: ${result.initialSize}</p>
-                <p>Final Size: ${result.finalSize}</p>
-            `;
-
-            // Display audio-removed file link if available
-            if (result.audioRemovedFile) {
+            if (result.initialSize !== undefined && result.finalSize !== undefined) {
+                const compressionRatio = ((result.initialSize - result.finalSize) / result.initialSize * 100).toFixed(1);
                 linksContainer.innerHTML += `
-                    <a href="${result.audioRemovedFile.link}" class="result-link" target="_blank">
-                        Audio Removed Version (${result.audioRemovedFile.size})
-                    </a>
+                    <div class="size-info">
+                        <p>Initial Size: ${formatBytes(result.initialSize)}</p>
+                        <p>Final Size: ${formatBytes(result.finalSize)}</p>
+                        <p>Space Saved: ${compressionRatio}%</p>
+                    </div>
                 `;
             }
 
-            // Display compressed file link if available
-            if (result.compressedFile) {
-                linksContainer.innerHTML += `
-                    <a href="${result.compressedFile.link}" class="result-link" target="_blank">
-                        Compressed Version (${result.compressedFile.size})
-                    </a>
-                `;
-            }
-
-            // Display converted file links if available
-            if (result.convertedFiles && result.convertedFiles.length > 0) {
-                result.convertedFiles.forEach(file => {
+            // Display converted files
+            if (result.files && result.files.length > 0) {
+                result.files.forEach(file => {
                     linksContainer.innerHTML += `
                         <a href="${file.link}" class="result-link" target="_blank">
-                            ${file.format.toUpperCase()} Version (${file.size})
-                        </a>
-                    `;
-                });
-            }
-
-            // Display poster image link if available
-            if (result.posterImage) {
-                linksContainer.innerHTML += `
-                    <a href="${result.posterImage.link}" class="result-link" target="_blank">
-                        Poster Image (${result.posterImage.size})
-                    </a>
-                `;
-
-                // Optionally display the poster image
-                const posterImg = document.getElementById('posterImage');
-                posterImg.src = result.posterImage.link;
-                posterImg.style.display = 'block';
-            }
-        }
-
-        function showError(message) {
-            const errorDiv = document.getElementById('error');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
-            document.getElementById('loading').style.display = 'none';
-        }
-
-        async function checkStatus(uuid) {
-            try {
-                const response = await fetch(`/status/${uuid}`);
-                const result = await response.json();
-
-                if (result.status === 'completed') {
-                    displayProcessedFiles(result);
-                } else if (result.status === 'failed') {
-                    showError(result.error);
-                } else {
-                    // Handle other statuses if necessary
-                }
-            } catch (error) {
-                showError('Error fetching status.');
-                console.error(error);
-            }
-        }
-
-        function displayProcessedFiles(result) {
-            const linksContainer = document.getElementById('processedFiles');
-            linksContainer.innerHTML = '';
-
-            // Display original and final sizes
-            document.getElementById('initialSize').textContent = result.originalFileSize || 'N/A';
-            document.getElementById('finalSize').textContent = result.finalFileSize || 'N/A';
-
-            // Display compressed file link
-            if (result.compressedFileName) {
-                linksContainer.innerHTML += `
-                    <a href="/view/${result.compressedFileName}" class="result-link" target="_blank">
-                        Compressed Version (${formatBytes(result.compressedFileSize)})
-                    </a>
-                `;
-            }
-
-            // Display audio-removed file link if available
-            if (result.audioRemovedFile) {
-                linksContainer.innerHTML += `
-                    <a href="/view/${result.audioRemovedFile.fileName}" class="result-link" target="_blank">
-                        Audio Removed Version (${formatBytes(result.audioRemovedFile.fileSize)})
-                    </a>
-                `;
-            }
-
-            // Display converted file links if available
-            if (result.convertedFiles && result.convertedFiles.length > 0) {
-                result.convertedFiles.forEach(file => {
-                    linksContainer.innerHTML += `
-                        <a href="/view/${file.fileName}" class="result-link" target="_blank">
                             ${file.format.toUpperCase()} Version (${formatBytes(file.fileSize)})
                         </a>
                     `;
                 });
             }
 
-            // Display poster image link if available
-            if (result.posterFileName) {
+            // Display compressed file
+            if (result.compressed) {
                 linksContainer.innerHTML += `
-                    <a href="/view/${result.posterFileName}" class="result-link" target="_blank">
-                        Poster Image (${formatBytes(result.posterFileSize)})
+                    <a href="${result.compressed.link}" class="result-link" target="_blank">
+                        Compressed Version (${formatBytes(result.compressed.fileSize)})
+                    </a>
+                `;
+            }
+
+            // Display audio-removed file
+            if (result.audioRemovedFile) {
+                linksContainer.innerHTML += `
+                    <a href="${result.audioRemovedFile.link}" class="result-link" target="_blank">
+                        Audio Removed Version (${formatBytes(result.audioRemovedFile.fileSize)})
+                    </a>
+                `;
+            }
+
+            // Display poster image
+            if (result.poster) {
+                linksContainer.innerHTML += `
+                    <a href="${result.poster.link}" class="result-link" target="_blank">
+                        Poster Image (${formatBytes(result.poster.fileSize)})
                     </a>
                 `;
 
-                // Optionally display the poster image
+                // Display the poster image
                 const posterImg = document.getElementById('posterImage');
-                posterImg.src = `/view/${result.posterFileName}`;
+                posterImg.src = result.poster.link;
                 posterImg.style.display = 'block';
             }
-
-            document.getElementById('loading').style.display = 'none';
         }
 
+        // Helper function for formatting bytes
         function formatBytes(bytes, decimals = 2) {
-            if (bytes === 0) return '0 Bytes';
+            if (!+bytes) return '0 Bytes';
             const k = 1024;
             const dm = decimals < 0 ? 0 : decimals;
             const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+            return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
         }
 
-        // Example usage after uploading a file
-        async function uploadFile(event) {
-            event.preventDefault();
-            const form = event.target;
-            const formData = new FormData(form);
-            const uuid = await submitForm(formData);
-            checkStatus(uuid);
+        // Update the showError function to be more informative
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = `Error: ${message}. Please try again or contact support if the problem persists.`;
+            errorDiv.style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('progressBar').style.display = 'none';
+            document.getElementById('statusMessage').style.display = 'none';
         }
 
-        async function submitForm(formData) {
-            const response = await fetch('/process', {
-                method: 'POST',
-                body: formData
-            });
-            const result = await response.json();
-            if (result.uuid) {
-                logger.info(`Uploaded successfully. UUID: ${result.uuid}`);
-                return result.uuid;
-            } else {
-                showError(result.error || 'Upload failed.');
-                throw new Error(result.error || 'Upload failed.');
-            }
+        // Add a helper function to show success message
+        function showSuccess(message) {
+            const statusMessage = document.getElementById('statusMessage');
+            statusMessage.textContent = message;
+            statusMessage.style.color = '#28a745';
+            statusMessage.style.display = 'block';
         }
 
-        // Attach event listener to your form
-        document.getElementById('uploadForm').addEventListener('submit', uploadFile);
-
-        async function handleProcessResponse(response) {
-            const linksContainer = document.querySelector('.result-links');
-            linksContainer.innerHTML = '<h3>Processed Files:</h3>';
-
-            // Initial and Final Sizes
-            linksContainer.innerHTML += `
-                <p>Initial Size: ${formatBytes(response.initialSize)}</p>
-                <p>Final Size: ${formatBytes(response.finalSize)}</p>
+        // Add a new function to show processing details
+        function showProcessingDetails(details) {
+            const statusMessage = document.getElementById('statusMessage');
+            statusMessage.innerHTML = `
+                <div class="processing-details">
+                    <p>${details.message}</p>
+                    ${details.substep ? `<small>${details.substep}</small>` : ''}
+                </div>
             `;
-
-            // Files
-            response.files.forEach(file => {
-                linksContainer.innerHTML += `
-                    <a href="${file.link}" class="result-link" target="_blank">
-                        ${file.format.toUpperCase()} Version (${formatBytes(file.fileSize)})
-                    </a>
-                `;
-            });
-
-            // Compressed File
-            if (response.compressed && response.compressed.link) {
-                linksContainer.innerHTML += `
-                    <a href="${response.compressed.link}" class="result-link" target="_blank">
-                        Compressed Version (${formatBytes(response.compressed.fileSize || 0)})
-                    </a>
-                `;
-            }
-
-            // Poster Image
-            if (response.poster && response.poster.link) {
-                linksContainer.innerHTML += `
-                    <a href="${response.poster.link}" class="result-link" target="_blank">
-                        Poster Image (${formatBytes(response.poster.fileSize)})
-                    </a>
-                `;
-
-                // Optionally display the poster image
-                const posterImg = document.getElementById('posterImage');
-                posterImg.src = response.poster.link;
-                posterImg.style.display = 'block';
-            }
         }
-
-        // Example usage after receiving the response
-        fetch('/process', {
-            method: 'POST',
-            // ... your fetch configuration
-        })
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'completed') {
-                    handleProcessResponse(data);
-                } else {
-                    // Handle errors or other statuses
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-            });
     </script>
 </body>
-</html> 
+</html>

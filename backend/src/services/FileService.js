@@ -5,48 +5,40 @@ export class FileService {
   constructor() {}
 
   async createFolder(paths) {
-    for (const p of Object.values(paths)) {
+    for (const folderPath of Object.values(paths)) {
       try {
-        await fs.access(p);
+        await fs.access(folderPath);
       } catch {
-        await fs.mkdir(p, { recursive: true });
+        await fs.mkdir(folderPath, { recursive: true });
       }
     }
   }
 
-  async cleanFolder(dirPath) {
-    const items = await fs.readdir(dirPath);
-    for (const item of items) {
-      const itemPath = path.join(dirPath, item);
-
-      let stats;
-      try {
-        stats = await fs.lstat(itemPath);
-      } catch (error) {
-        console.error(`Failed to lstat ${itemPath}:`, error);
-        continue; // Skip items we can't stat
-      }
-
-      // Log item type for debugging
-      console.log(`Cleaning item: ${itemPath}, isFile=${stats.isFile()}, isDirectory=${stats.isDirectory()}, isSymbolicLink=${stats.isSymbolicLink()}`);
-
-      if (stats.isFile()) {
-        try {
-          await fs.unlink(itemPath);
-        } catch (error) {
-          console.error(`Failed to unlink ${itemPath}:`, error);
-          // Try a forced removal if unlink fails
-          await fs.rm(itemPath, { recursive: true, force: true });
-        }
+  async cleanFolder(folderPath) {
+    // Removes all files in a folder but not the folder itself
+    const entries = await fs.readdir(folderPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(folderPath, entry.name);
+      if (entry.isDirectory()) {
+        await this.deleteFolder(fullPath); // recursively delete subfolders
       } else {
-        // If it's a directory, symlink, or anything else, try removing it recursively and forcefully
-        try {
-          await fs.rm(itemPath, { recursive: true, force: true });
-        } catch (error) {
-          console.error(`Failed to remove ${itemPath} with rm:`, error);
-        }
+        await fs.unlink(fullPath);
       }
     }
+  }
+
+  async deleteFolder(folderPath) {
+    // Recursively delete a folder and all its contents
+    const entries = await fs.readdir(folderPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(folderPath, entry.name);
+      if (entry.isDirectory()) {
+        await this.deleteFolder(fullPath);
+      } else {
+        await fs.unlink(fullPath);
+      }
+    }
+    await fs.rmdir(folderPath);
   }
 
   async getAllFromFolder(folderPath) {

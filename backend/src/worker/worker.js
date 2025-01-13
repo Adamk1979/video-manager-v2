@@ -1,5 +1,3 @@
-// backend/src/worker/worker.js
-
 import 'dotenv/config';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { VideoManager } from '../services/VideoManager.js';
@@ -23,157 +21,116 @@ async function updateProgress(id, progress) {
   }
 }
 
-async function listDirectory(dirPath) {
-  try {
-    const files = await fs.readdir(dirPath);
-    logger.info(`Contents of ${dirPath}: ${files.join(', ')}`);
-  } catch (err) {
-    logger.error(`Failed to list directory ${dirPath}:`, err);
-  }
-}
-
 async function processJob(job) {
   const dbService = new DatabaseService();
-  logger.info(`Starting processing of job ${job.id}`);
+  logger.info(`Starting job ${job.id}`);
 
   try {
     await dbService.updateConversionStatus(job.id, 'processing');
-    logger.info(`Job ${job.id} status updated to 'processing'`);
-  } catch (err) {
-    logger.error(`Failed to update status to 'processing' for job ${job.id}:`, err);
-    return;
-  }
+    
+    let options = JSON.parse(job.options || '{}');
+    logger.info(`Processing options: ${JSON.stringify({
+      removeAudio: options.removeAudio,
+      compress: options.compress,
+      resolution: options.resolution,
+      convert: options.convert,
+      formatType: options.formatType,
+      generatePoster: options.generatePoster
+    })}`);
 
-  let options = {};
-  try {
-    options = JSON.parse(job.options || '{}');
-    logger.info(`Job ${job.id} options: ${JSON.stringify(options)}`);
-  } catch (err) {
-    logger.error(`Failed to parse options for job ${job.id}:`, err);
-    await dbService.updateConversionStatus(job.id, 'failed', { errorMessage: 'Invalid options format' });
-    return;
-  }
+    const jobTmpDir = path.join(PATHS.TMP, job.id);
+    const videoExtension = options.videoExtension || 'mp4';
+    const inputFile = path.resolve(jobTmpDir, `${job.id}.${videoExtension}`);
 
-  logger.info(`PATHS.TMP: ${PATHS.TMP}`);
-
-  const videoExtension = options.videoExtension || 'mp4';
-  const inputFile = path.resolve(PATHS.TMP, `${job.id}.${videoExtension}`);
-  logger.info(`Job ${job.id} input file path: ${inputFile}`);
-
-  try {
+    // Verify input file exists
     await fs.access(inputFile);
-    logger.info(`Input file exists for job ${job.id}: ${inputFile}`);
-  } catch {
-    logger.error(`Input file not found for job ${job.id}: ${inputFile}`);
-    await dbService.updateConversionStatus(job.id, 'failed', { errorMessage: 'Input file not found' });
-    return;
-  }
 
-  await listDirectory(PATHS.TMP);
+    const videoManager = new VideoManager({
+      id: job.id,
+      extension: videoExtension,
+      inputFile: inputFile
+    });
 
-  const videoManager = new VideoManager({
-    id: job.id,
-    extension: videoExtension,
-    inputFile: inputFile
-  });
-
-  let convertedFiles = [];
-  let compressedFileName = null;
-  let compressedFileSize = null;
-  let audioRemoved = false;
-  let audioRemovedFile = null;
-  let posterFileName = null;
-  let posterFileSize = null;
-
-  try {
     let progress = 0;
     await updateProgress(job.id, progress);
 
+    // Process each selected option
     if (options.removeAudio) {
-      logger.info(`Job ${job.id}: Starting audio removal`);
+      logger.info(`Processing: Removing audio`);
       const isRemoved = await videoManager.removeAudio();
       if (!isRemoved) throw new Error('Audio removal failed');
-      audioRemoved = true;
-      audioRemovedFile = {
-        fileName: videoManager.fileName,
-        fileSize: videoManager.fileSize,
-      };
       progress += 20;
       await updateProgress(job.id, progress);
-      logger.info(`Job ${job.id}: Audio removed successfully`);
+      logger.info(`Completed: Audio removal`);
 
       videoManager.updateProperties({ inputFile: videoManager.outputFile });
     }
 
     if (options.compress) {
-      logger.info(`Job ${job.id}: Starting compression`);
+      logger.info(`Processing: Compressing video to ${options.resolution}`);
       const isCompressed = await videoManager.compress(options.resolution, options.width);
       if (!isCompressed) throw new Error('Compression failed');
-      compressedFileName = videoManager.fileName;
-      compressedFileSize = videoManager.fileSize;
       progress += 20;
       await updateProgress(job.id, progress);
-      logger.info(`Job ${job.id}: Compression completed successfully`);
+      logger.info(`Completed: Video compression`);
 
       videoManager.updateProperties({ inputFile: videoManager.outputFile });
     }
 
     if (options.convert && options.formatType) {
       const formatTypes = options.formatType.split(',').map(f => f.trim());
-      logger.info(`Job ${job.id}: Starting format conversion to ${formatTypes.join(', ')}`);
+      logger.info(`Processing: Converting to formats: ${formatTypes.join(', ')}`);
+      
       for (const format of formatTypes) {
-        logger.info(`Job ${job.id}: Converting to format ${format}`);
-        const tempVideoManager = new VideoManager({
-          id: `${job.id}-${format}`,
-          extension: format,
-          inputFile: videoManager.inputFile
-        });
-        const isConverted = await tempVideoManager.convert(format);
+        const isConverted = await videoManager.convert(format);
         if (!isConverted) throw new Error(`Conversion to ${format} failed`);
-
-        convertedFiles.push({
-          format: format,
-          fileName: tempVideoManager.fileName,
-          fileSize: tempVideoManager.fileSize
-        });
-        logger.info(`Job ${job.id}: Conversion to ${format} completed successfully`);
+        logger.info(`Completed: Conversion to ${format}`);
       }
       progress += 20;
       await updateProgress(job.id, progress);
     }
 
     if (options.generatePoster) {
-      logger.info(`Job ${job.id}: Starting poster image generation`);
-      const posterFormat = options.posterFormat || 'png';
-      const posterTime = options.posterTime || 1;
-      const isPosterGenerated = await videoManager.generatePosterImage(posterTime, posterFormat);
-      if (!isPosterGenerated) throw new Error('Poster image generation failed');
-
-      posterFileName = videoManager.posterFileName;
-      posterFileSize = videoManager.posterFileSize;
+      logger.info(`Processing: Generating poster image`);
+      const isPosterGenerated = await videoManager.generatePosterImage(
+        options.posterTime || 1,
+        options.posterFormat || 'png'
+      );
+      if (!isPosterGenerated) throw new Error('Poster generation failed');
       progress += 20;
       await updateProgress(job.id, progress);
-      logger.info(`Job ${job.id}: Poster image generated successfully`);
+      logger.info(`Completed: Poster generation`);
     }
 
-    logger.info(`Job ${job.id}: Cleaning up temporary files`);
-    await fileService.cleanFolder(PATHS.TMP);
-    logger.info(`Job ${job.id}: Temporary files cleaned up`);
+    // Collect results from video processing
+    const results = {
+      convertedFiles: videoManager.convertedFiles || [],
+      compressedFileName: videoManager.compressedFileName || null,
+      compressedFileSize: videoManager.compressedFileSize || null,
+      audioRemoved: options.removeAudio || false,
+      audioRemovedFile: videoManager.audioRemovedFile || null,
+      posterFileName: videoManager.posterFileName || null,
+      posterFileSize: videoManager.posterFileSize || null
+    };
 
-    await dbService.updateConversionStatus(job.id, 'completed', {
-      convertedFiles,
-      compressedFileName,
-      compressedFileSize,
-      audioRemoved,
-      audioRemovedFile,
-      posterFileName,
-      posterFileSize
-    });
-    progress = 100;
-    await updateProgress(job.id, progress);
-    logger.info(`Job ${job.id} completed successfully with 100% progress`);
+    // Cleanup and complete
+    try {
+      await fileService.deleteFolder(jobTmpDir);
+    } catch (cleanupError) {
+      logger.error(`Cleanup failed: ${cleanupError.message}`);
+    }
+    logger.info(`Job ${job.id} completed successfully`);
+
+    await dbService.updateConversionStatus(job.id, 'completed', results);
+    await updateProgress(job.id, 100);
   } catch (error) {
-    logger.error(`Error processing job ${job.id}:`, error);
+    logger.error(`Job ${job.id} failed: ${error.message}`);
+    try {
+      const jobTmpDir = path.join(PATHS.TMP, job.id);
+      await fileService.deleteFolder(jobTmpDir);
+    } catch (cleanupError) {
+      logger.error(`Cleanup failed: ${cleanupError.message}`);
+    }
     await dbService.updateConversionStatus(job.id, 'failed', { errorMessage: error.message });
   }
 }

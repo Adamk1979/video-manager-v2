@@ -9,6 +9,8 @@ import { DatabaseService } from '../services/DatabaseService.js';
 import { pool } from '../utils/dbConfig.js';
 import logger from '../logger/logger.js';
 import fs from 'fs';
+import path from 'path';
+import { formatBytes } from '../utils/formatBytes.js';
 
 /**
  * Controller function to stream a video file to the client.
@@ -136,7 +138,19 @@ async function view(req, res) {
 async function viewMedia(req, res) {
   try {
     const files = await fileService.getAllFromFolder(PATHS.MEDIA);
-    res.send({ files: files.map((file) => linkToFile({ req, file })) });
+    const filesWithSizes = await Promise.all(
+      files.map(async (file) => {
+        const filePath = path.join(PATHS.MEDIA, file);
+        const stats = await fs.stat(filePath);
+        const size = formatBytes(stats.size);
+        return {
+          name: file,
+          link: linkToFile({ req, file }),
+          size, // Human-readable size
+        };
+      })
+    );
+    res.send({ files: filesWithSizes });
   } catch (err) {
     logger.error('Error in viewMedia controller:', err);
     res.status(500).send({ message: 'Internal server error' });
@@ -259,18 +273,13 @@ async function status(req, res) {
 
     const job = rows[0];
 
-    logger.info(`Data Types for Job ${uuid}:`);
-    logger.info(`converted_files type: ${typeof job.converted_files}`);
-    logger.info(`audio_removed_file type: ${typeof job.audio_removed_file}`);
-
     if (job.status === 'pending' || job.status === 'processing') {
       return res.json({ 
         status: job.status, 
         progress: job.progress,
-        initialSize: job.original_file_size 
+        initialSize: formatBytes(job.original_file_size)
       });
     } else if (job.status === 'completed') {
-      // Handle convertedFiles
       let convertedFiles = [];
       if (job.converted_files) {
         if (typeof job.converted_files === 'string') {
@@ -285,13 +294,12 @@ async function status(req, res) {
         }
       }
 
-      // Add link field to converted files
       convertedFiles = convertedFiles.map(file => ({
         ...file,
-        link: createFileLink(req, file.fileName)
+        link: createFileLink(req, file.fileName),
+        formattedSize: formatBytes(file.fileSize || 0)
       }));
 
-      // Handle audioRemovedFile
       let audioRemovedFile = null;
       if (job.audio_removed_file) {
         if (typeof job.audio_removed_file === 'string') {
@@ -307,9 +315,9 @@ async function status(req, res) {
 
       if (audioRemovedFile) {
         audioRemovedFile.link = createFileLink(req, audioRemovedFile.fileName);
+        audioRemovedFile.formattedSize = formatBytes(audioRemovedFile.fileSize || 0);
       }
 
-      // Calculate the final size
       let finalSize = 0;
       convertedFiles.forEach(file => {
         finalSize += file.fileSize || 0;
@@ -327,20 +335,22 @@ async function status(req, res) {
       const compressed = job.compressed_file_name ? {
         fileName: job.compressed_file_name,
         fileSize: job.compressed_file_size,
-        link: createFileLink(req, job.compressed_file_name)
+        link: createFileLink(req, job.compressed_file_name),
+        formattedSize: formatBytes(job.compressed_file_size || 0)
       } : null;
 
       const poster = job.poster_file_name ? {
         fileName: job.poster_file_name,
         fileSize: job.poster_file_size,
-        link: createFileLink(req, job.poster_file_name)
+        link: createFileLink(req, job.poster_file_name),
+        formattedSize: formatBytes(job.poster_file_size || 0)
       } : null;
 
       return res.json({
         status: 'completed',
         progress: 100,
-        initialSize: job.original_file_size,
-        finalSize: finalSize,
+        initialSize: formatBytes(job.original_file_size),
+        finalSize: formatBytes(finalSize),
         files: convertedFiles,
         compressed,
         poster,
