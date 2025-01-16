@@ -3,11 +3,15 @@ import { PATHS } from '../utils/constants.js';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import logger from '../logger/logger.js';
+import { EventEmitter } from 'events';
+import path from 'path';
+import { formatBytes } from '../utils/formatBytes.js';
 
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
-export class VideoManager {
+export class VideoManager extends EventEmitter {
   constructor({ id, extension, inputFile, outputPath = PATHS.MEDIA }) {
+    super();
     this.id = id;
     this.extension = extension;
     this.inputFile = inputFile;
@@ -31,7 +35,7 @@ export class VideoManager {
     logger.info(`Compress Method - ID: ${this.id}, Extension: ${this.extension}, InputFile: ${this.inputFile}`);
 
     this.fileName = `${this.id}.${this.extension}`;
-    this.outputFile = `${this.outputPath}/${this.fileName}`;
+    this.outputFile = path.join(this.outputPath, this.fileName);
     logger.info(`Compressing to file: ${this.outputFile}`);
 
     const resolutionMap = {
@@ -53,32 +57,58 @@ export class VideoManager {
       sizeOption = null;
     }
 
-    return await new Promise((resolve, reject) => {
-      let command = ffmpeg(this.inputFile);
+    return new Promise((resolve, reject) => {
+      let totalDuration = 0;
 
-      if (sizeOption) {
-        command = command.size(sizeOption);
-      }
+      ffmpeg.ffprobe(this.inputFile, (err, metadata) => {
+        if (err) {
+          logger.error(`FFProbe error: ${err.message}`);
+          return reject(`FFProbe error: ${err.message}`);
+        }
+        const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+        if (videoStream && videoStream.duration) {
+          totalDuration = videoStream.duration;
+        } else {
+          logger.warn('Unable to determine video duration for progress tracking.');
+        }
 
-      command
-        .videoCodec('libx264')
-        .output(this.outputFile)
-        .on('end', () => {
-          try {
-            const stats = fs.statSync(this.outputFile);
-            this.fileSize = stats.size;
-            logger.info(`Compression successful. Output file: ${this.outputFile}, Size: ${this.fileSize} bytes`);
-            resolve(true);
-          } catch (statErr) {
-            logger.error(`Error getting stats for compressed file: ${statErr.message}`);
-            reject(`Error getting stats for compressed file: ${statErr.message}`);
-          }
-        })
-        .on('error', (err) => {
-          logger.error(`Compression error: ${err.message}`);
-          reject(`Error occurred during compression: ${err.message}`);
-        })
-        .run();
+        let command = ffmpeg(this.inputFile);
+
+        if (sizeOption) {
+          command = command.size(sizeOption);
+        }
+
+        command
+          .videoCodec('libx264')
+          .output(this.outputFile)
+          .on('start', (commandLine) => {
+            logger.info(`FFmpeg process started: ${commandLine}`);
+          })
+          .on('progress', (progress) => {
+            if (totalDuration) {
+              const percent = Math.min((progress.timemark / totalDuration) * 100, 100);
+              const roundedPercent = Math.round(percent);
+              logger.info(`Progress: ${roundedPercent}%`);
+              this.emit('progress', roundedPercent);
+            }
+          })
+          .on('end', () => {
+            try {
+              const stats = fs.statSync(this.outputFile);
+              this.fileSize = stats.size;
+              logger.info(`Compression successful. Output file: ${this.outputFile}, Size: ${formatBytes(this.fileSize)}`);
+              resolve(true);
+            } catch (statErr) {
+              logger.error(`Error getting stats for compressed file: ${statErr.message}`);
+              reject(`Error getting stats for compressed file: ${statErr.message}`);
+            }
+          })
+          .on('error', (err) => {
+            logger.error(`Compression error: ${err.message}`);
+            reject(`Error occurred during compression: ${err.message}`);
+          })
+          .run();
+      });
     });
   }
 

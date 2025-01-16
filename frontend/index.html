@@ -134,12 +134,12 @@
             margin-bottom: 15px;
         }
 
-        /* Add new styles for progress bar */
+        /* Progress Bar Styles */
         .progress-bar {
             width: 100%;
-            height: 20px;
+            height: 25px;
             background-color: #f0f0f0;
-            border-radius: 10px;
+            border-radius: 12.5px;
             margin: 15px 0;
             overflow: hidden;
             display: none;
@@ -149,14 +149,23 @@
             height: 100%;
             background-color: #007bff;
             width: 0%;
-            transition: width 0.3s ease-in-out;
+            transition: width 0.4s ease-in-out;
         }
 
         .status-message {
             text-align: center;
             margin: 10px 0;
             color: #666;
+            font-weight: 500;
             display: none;
+        }
+
+        .status-message.success {
+            color: #28a745;
+        }
+
+        .status-message.error {
+            color: #dc3545;
         }
 
         .processing-details {
@@ -170,24 +179,6 @@
             display: block;
             color: #6c757d;
             margin-top: 5px;
-        }
-
-        .status-message {
-            text-align: center;
-            margin: 10px 0;
-            color: #666;
-            font-weight: 500;
-            display: none;
-        }
-
-        .error {
-            background-color: #fff3f3;
-            border: 1px solid #dc3545;
-            color: #dc3545;
-            padding: 15px;
-            margin: 10px 0;
-            border-radius: 4px;
-            display: none;
         }
     </style>
 </head>
@@ -268,7 +259,7 @@
         <div id="error" class="error"></div>
         <div id="loading" class="loading"></div>
         
-        <!-- Add progress bar and status message -->
+        <!-- Progress Bar and Status Message -->
         <div id="progressBar" class="progress-bar">
             <div id="progressBarFill" class="progress-bar-fill"></div>
         </div>
@@ -287,6 +278,9 @@
     </div>
 
     <script>
+        // Store selected processing steps
+        let selectedSteps = [];
+
         // Show/hide compression options
         document.getElementById('compress').addEventListener('change', function() {
             document.getElementById('compressionOptions').style.display = 
@@ -333,12 +327,49 @@
                 return;
             }
 
+            // Capture selected processing steps
+            selectedSteps = [];
+            if (document.getElementById('removeAudio').checked) {
+                selectedSteps.push('removeAudio');
+            }
+            if (document.getElementById('compress').checked) {
+                selectedSteps.push('compress');
+            }
+            if (document.getElementById('convert').checked) {
+                selectedSteps.push('convert');
+            }
+            if (document.getElementById('generatePoster').checked) {
+                selectedSteps.push('generatePoster');
+            }
+
+            // If no processing steps selected, still proceed with 'finalizing'
+            const totalSteps = selectedSteps.length > 0 ? selectedSteps.length + 1 : 1; // +1 for finalizing
+
+            // Define step messages based on selected steps
+            const stepMessages = selectedSteps.map(step => {
+                switch(step) {
+                    case 'removeAudio':
+                        return 'Removing audio from video...';
+                    case 'compress':
+                        return 'Compressing video...';
+                    case 'convert':
+                        return 'Converting video format...';
+                    case 'generatePoster':
+                        return 'Generating poster image...';
+                    default:
+                        return 'Processing...';
+                }
+            });
+
+            // Always add finalizing step
+            stepMessages.push('Finalizing processing...');
+
             // Show loading state and progress bar
             document.getElementById('loading').style.display = 'block';
             document.getElementById('error').style.display = 'none';
             document.getElementById('progressBar').style.display = 'block';
             document.getElementById('statusMessage').style.display = 'block';
-            document.getElementById('statusMessage').textContent = 'Uploading file...';
+            document.getElementById('statusMessage').textContent = stepMessages[0];
             document.getElementById('progressBarFill').style.width = '0%';
 
             // Disable the submit button during upload
@@ -395,10 +426,10 @@
                 }
 
                 const { uuid } = await response.json();
-                document.getElementById('statusMessage').textContent = 'File uploaded, waiting for processing...';
+                document.getElementById('statusMessage').textContent = stepMessages[0];
                 
                 // Start polling for status
-                await pollStatus(uuid);
+                await pollStatus(uuid, stepMessages, totalSteps);
             } catch (error) {
                 showError(error.message);
             } finally {
@@ -407,24 +438,44 @@
             }
         });
 
-        // Update the pollStatus function for better status messaging
-        async function pollStatus(uuid) {
+        /**
+         * Poll the status endpoint periodically to get progress updates
+         * @param {string} uuid - The unique job identifier
+         * @param {Array} stepMessages - Array of step messages based on selected options
+         * @param {number} totalSteps - Total number of steps including finalizing
+         */
+        async function pollStatus(uuid, stepMessages, totalSteps) {
             const progressBarFill = document.getElementById('progressBarFill');
             const statusMessage = document.getElementById('statusMessage');
             let retryCount = 0;
-            let lastProgress = 0;
-            const maxRetries = 60; // 2 minutes maximum waiting time
-            
+            const maxRetries = 120; // 2 minutes maximum waiting time (120 * 1 sec)
+            const pollInterval = 1000; // 1 second
+            let currentStepIndex = 0;
+            const progressPerStep = 100 / totalSteps;
+
             while (retryCount < maxRetries) {
                 try {
                     const response = await fetch(`/status/${uuid}`);
+                    if (!response.ok) {
+                        if (response.status === 404) {
+                            throw new Error('Job not found');
+                        } else if (response.status === 410) {
+                            throw new Error('File has expired and is no longer available');
+                        } else {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                    }
+
                     const result = await response.json();
 
                     // Update progress bar
-                    progressBarFill.style.width = `${result.progress || 0}%`;
-                    
+                    const progress = result.progress || 0;
+                    progressBarFill.style.width = `${progress}%`;
+
                     if (result.status === 'completed') {
                         statusMessage.textContent = 'Processing completed successfully!';
+                        statusMessage.classList.add('success');
+                        statusMessage.classList.remove('error');
                         document.getElementById('loading').style.display = 'none';
                         displayResults(result);
                         break;
@@ -432,35 +483,18 @@
                         throw new Error(result.error || 'Processing failed');
                     } else if (result.status === 'pending') {
                         statusMessage.textContent = 'Waiting for worker to pick up the job...';
-                        await new Promise(resolve => setTimeout(resolve, 2000));
                     } else if (result.status === 'processing') {
-                        // Provide more detailed status messages based on progress
-                        if (result.progress === 0) {
-                            statusMessage.textContent = 'Starting video processing...';
-                        } else if (result.progress > lastProgress) {
-                            // Update status message based on progress milestones
-                            switch(true) {
-                                case result.progress <= 20:
-                                    statusMessage.textContent = 'Removing audio from video...';
-                                    break;
-                                case result.progress <= 40:
-                                    statusMessage.textContent = 'Compressing video...';
-                                    break;
-                                case result.progress <= 60:
-                                    statusMessage.textContent = 'Converting video format...';
-                                    break;
-                                case result.progress <= 80:
-                                    statusMessage.textContent = 'Generating poster image...';
-                                    break;
-                                case result.progress < 100:
-                                    statusMessage.textContent = 'Finalizing processing...';
-                                    break;
-                            }
+                        // Determine current step based on progress
+                        const stepIndex = Math.min(Math.floor(progress / progressPerStep), stepMessages.length - 1);
+                        if (stepIndex !== currentStepIndex) {
+                            currentStepIndex = stepIndex;
+                            statusMessage.textContent = stepMessages[currentStepIndex];
                         }
-                        lastProgress = result.progress;
-                        await new Promise(resolve => setTimeout(resolve, 2000));
                     }
+
+                    // Increment retry count and wait before next poll
                     retryCount++;
+                    await new Promise(resolve => setTimeout(resolve, pollInterval));
                 } catch (error) {
                     showError(error.message);
                     break;
@@ -472,28 +506,20 @@
             }
         }
 
-        // Updated displayResults function
+        /**
+         * Display the processed files with links and sizes
+         * @param {object} result - The result object from the status endpoint
+         */
         function displayResults(result) {
             const linksContainer = document.querySelector('.result-links');
             linksContainer.innerHTML = '<h3>Processed Files:</h3>';
-
-            if (result.initialSize !== undefined && result.finalSize !== undefined) {
-                const compressionRatio = ((result.initialSize - result.finalSize) / result.initialSize * 100).toFixed(1);
-                linksContainer.innerHTML += `
-                    <div class="size-info">
-                        <p>Initial Size: ${formatBytes(result.initialSize)}</p>
-                        <p>Final Size: ${formatBytes(result.finalSize)}</p>
-                        <p>Space Saved: ${compressionRatio}%</p>
-                    </div>
-                `;
-            }
 
             // Display converted files
             if (result.files && result.files.length > 0) {
                 result.files.forEach(file => {
                     linksContainer.innerHTML += `
                         <a href="${file.link}" class="result-link" target="_blank">
-                            ${file.format.toUpperCase()} Version (${formatBytes(file.fileSize)})
+                            ${file.format.toUpperCase()} Version (${file.formattedSize})
                         </a>
                     `;
                 });
@@ -503,7 +529,7 @@
             if (result.compressed) {
                 linksContainer.innerHTML += `
                     <a href="${result.compressed.link}" class="result-link" target="_blank">
-                        Compressed Version (${formatBytes(result.compressed.fileSize)})
+                        Compressed Version (${result.compressed.formattedSize})
                     </a>
                 `;
             }
@@ -512,7 +538,7 @@
             if (result.audioRemovedFile) {
                 linksContainer.innerHTML += `
                     <a href="${result.audioRemovedFile.link}" class="result-link" target="_blank">
-                        Audio Removed Version (${formatBytes(result.audioRemovedFile.fileSize)})
+                        Audio Removed Version (${result.audioRemovedFile.formattedSize})
                     </a>
                 `;
             }
@@ -521,7 +547,7 @@
             if (result.poster) {
                 linksContainer.innerHTML += `
                     <a href="${result.poster.link}" class="result-link" target="_blank">
-                        Poster Image (${formatBytes(result.poster.fileSize)})
+                        Poster Image (${result.poster.formattedSize})
                     </a>
                 `;
 
@@ -530,9 +556,41 @@
                 posterImg.src = result.poster.link;
                 posterImg.style.display = 'block';
             }
+
+            // Calculate and display size savings
+            if (result.initialSize && result.finalSize) {
+                const initialBytes = parseBytes(result.initialSize);
+                const finalBytes = parseBytes(result.finalSize);
+                const savedBytes = initialBytes - finalBytes;
+                const savedPercentage = ((savedBytes / initialBytes) * 100).toFixed(2);
+
+                linksContainer.innerHTML += `
+                    <div class="size-info">
+                        <p>Initial Size: ${result.initialSize}</p>
+                        <p>Final Size: ${result.finalSize}</p>
+                        <p>Space Saved: ${savedPercentage}%</p>
+                    </div>
+                `;
+            }
+
+            // Hide loading and show preview links
+            document.getElementById('loading').style.display = 'none';
         }
 
-        // Helper function for formatting bytes
+        // Helper function to parse formatted bytes back to number (for calculations)
+        function parseBytes(formatted) {
+            const units = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const regex = /^([\d.]+)\s*(Bytes|KB|MB|GB|TB)$/;
+            const match = formatted.match(regex);
+            if (!match) return 0;
+            const value = parseFloat(match[1]);
+            const unit = match[2];
+            const index = units.indexOf(unit);
+            if (index === -1) return 0;
+            return value * Math.pow(1024, index);
+        }
+
+        // Helper function for formatting bytes (same as backend)
         function formatBytes(bytes, decimals = 2) {
             if (!+bytes) return '0 Bytes';
             const k = 1024;
@@ -542,7 +600,7 @@
             return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
         }
 
-        // Update the showError function to be more informative
+        // Show error messages to the user
         function showError(message) {
             const errorDiv = document.getElementById('error');
             errorDiv.textContent = `Error: ${message}. Please try again or contact support if the problem persists.`;
@@ -552,23 +610,13 @@
             document.getElementById('statusMessage').style.display = 'none';
         }
 
-        // Add a helper function to show success message
+        // Optional: Show success message with custom styling
         function showSuccess(message) {
             const statusMessage = document.getElementById('statusMessage');
             statusMessage.textContent = message;
-            statusMessage.style.color = '#28a745';
+            statusMessage.classList.add('success');
+            statusMessage.classList.remove('error');
             statusMessage.style.display = 'block';
-        }
-
-        // Add a new function to show processing details
-        function showProcessingDetails(details) {
-            const statusMessage = document.getElementById('statusMessage');
-            statusMessage.innerHTML = `
-                <div class="processing-details">
-                    <p>${details.message}</p>
-                    ${details.substep ? `<small>${details.substep}</small>` : ''}
-                </div>
-            `;
         }
     </script>
 </body>

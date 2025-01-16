@@ -1,10 +1,8 @@
-
 /* eslint-disable no-undef */
 // src/index.js
 
 import 'dotenv/config';
 import express from 'express';
-import rateLimit from 'express-rate-limit';
 import cron from 'node-cron';
 import * as fs from 'fs/promises';
 import path from 'path';
@@ -45,41 +43,11 @@ const upload = multer({
     }
 });
 
-const rateLimitWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
-const rateLimitMaxRequests = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100;
-
-const limiter = rateLimit({
-    windowMs: rateLimitWindowMs,
-    max: rateLimitMaxRequests,
-    standardHeaders: true,
-    legacyHeaders: false,
-    handler: (req, res) => {
-        res.status(429).json({
-            error: 'Too many requests, please try again later.',
-        });
-    },
-});
-
-app.use(limiter);
-
-const heavyLimiter = rateLimit({
-    windowMs: rateLimitWindowMs,
-    max: parseInt(process.env.RATE_LIMIT_MAX_HEAVY_REQUESTS) || 50,
-    standardHeaders: true,
-    legacyHeaders: false,
-    handler: (req, res) => {
-        res.status(429).json({
-            error: 'Too many heavy operations, please try again later.',
-        });
-    },
-});
-
 app.get('/view/media', VideoManageController.viewMedia);
 app.get('/view/:file', VideoManageController.view);
 app.get('/status/:uuid', VideoManageController.status);
 
 app.post('/process', 
-    heavyLimiter, 
     upload.single('file'), 
     (err, req, res, next) => {
         if (err instanceof multer.MulterError) {

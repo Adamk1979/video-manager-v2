@@ -261,7 +261,9 @@ async function status(req, res) {
         audio_removed_file, 
         poster_file_name, 
         poster_file_size,
-        original_file_size
+        original_file_size,
+        error_message,
+        expires_at
       FROM conversions 
       WHERE id = ? 
       LIMIT 1
@@ -273,11 +275,23 @@ async function status(req, res) {
 
     const job = rows[0];
 
+    // Check if the file has expired
+    const now = new Date();
+    if (new Date(job.expires_at) < now) {
+      logger.warn(`Attempt to access expired file: ${uuid}`);
+      return res
+        .status(410)
+        .json({ error: 'File has expired and is no longer available' });
+    }
+
+    // Parse progress as a number
+    const progress = Number(job.progress) || 0;
+
     if (job.status === 'pending' || job.status === 'processing') {
       return res.json({ 
         status: job.status, 
-        progress: job.progress,
-        initialSize: formatBytes(job.original_file_size)
+        progress: progress,
+        initialSize: formatBytes(job.original_file_size || 0)
       });
     } else if (job.status === 'completed') {
       let convertedFiles = [];
@@ -349,7 +363,7 @@ async function status(req, res) {
       return res.json({
         status: 'completed',
         progress: 100,
-        initialSize: formatBytes(job.original_file_size),
+        initialSize: formatBytes(job.original_file_size || 0),
         finalSize: formatBytes(finalSize),
         files: convertedFiles,
         compressed,
@@ -359,6 +373,7 @@ async function status(req, res) {
     } else if (job.status === 'failed') {
       return res.json({ 
         status: 'failed', 
+        progress: progress, // Optionally include progress at failure point
         error: job.error_message 
       });
     } else {
