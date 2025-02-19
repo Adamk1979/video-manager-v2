@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Video formatter and compressor",
   "main": "src/index.js",
-  "author": "Calin Vlad",
+  "author": "",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "mysql2": "^3.3.1",
     "node-cron": "^3.0.3",
     "nodemon": "^3.1.4",
+    "redis": "^4.7.0",
     "uuid": "^10.0.0",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"

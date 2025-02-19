@@ -28,58 +28,78 @@ export class VideoManager {
   }
   
   async compress(resolution, customWidth) {
-    logger.info(`Compress Method - ID: ${this.id}, Extension: ${this.extension}, InputFile: ${this.inputFile}`);
+    try {
+      await this.ensureInputFileExists();
+      logger.info(`Compress Method - ID: ${this.id}, Extension: ${this.extension}, InputFile: ${this.inputFile}`);
 
-    this.fileName = `${this.id}.${this.extension}`;
-    this.outputFile = `${this.outputPath}/${this.fileName}`;
-    logger.info(`Compressing to file: ${this.outputFile}`);
+      this.fileName = `${this.id}.${this.extension}`;
+      this.outputFile = `${this.outputPath}/${this.fileName}`;
+      logger.info(`Compressing to file: ${this.outputFile}`);
 
-    const resolutionMap = {
-      '1080p': '1920x1080',
-      '720p': '1280x720',
-      '480p': '854x480',
-    };
+      const resolutionMap = {
+        '1080p': '1920x1080',
+        '720p': '1280x720',
+        '480p': '854x480',
+      };
 
-    let sizeOption;
+      let sizeOption;
 
-    if (resolution === 'custom' && customWidth) {
-      const aspectRatio = await this.getAspectRatio();
-      const numericWidth = parseInt(customWidth, 10);
-      const customHeight = Math.round(numericWidth / aspectRatio);
-      sizeOption = `${numericWidth}x${customHeight}`;
-    } else if (resolutionMap[resolution]) {
-      sizeOption = resolutionMap[resolution];
-    } else {
-      sizeOption = null;
-    }
-
-    return await new Promise((resolve, reject) => {
-      let command = ffmpeg(this.inputFile);
-
-      if (sizeOption) {
-        command = command.size(sizeOption);
+      if (resolution === 'custom' && customWidth) {
+        const aspectRatio = await this.getAspectRatio();
+        const numericWidth = parseInt(customWidth, 10);
+        const customHeight = Math.round(numericWidth / aspectRatio);
+        sizeOption = `${numericWidth}x${customHeight}`;
+      } else if (resolutionMap[resolution]) {
+        sizeOption = resolutionMap[resolution];
+      } else {
+        sizeOption = null;
       }
 
-      command
-        .videoCodec('libx264')
-        .output(this.outputFile)
-        .on('end', () => {
-          try {
-            const stats = fs.statSync(this.outputFile);
-            this.fileSize = stats.size;
-            logger.info(`Compression successful. Output file: ${this.outputFile}, Size: ${this.fileSize} bytes`);
-            resolve(true);
-          } catch (statErr) {
-            logger.error(`Error getting stats for compressed file: ${statErr.message}`);
-            reject(`Error getting stats for compressed file: ${statErr.message}`);
-          }
-        })
-        .on('error', (err) => {
-          logger.error(`Compression error: ${err.message}`);
-          reject(`Error occurred during compression: ${err.message}`);
-        })
-        .run();
-    });
+      return await new Promise((resolve, reject) => {
+        let command = ffmpeg(this.inputFile)
+          .videoCodec('libx264')
+          .outputOptions([
+            '-preset medium', // För snabbare kodning, kan ändras till 'slow' för bättre kompression
+            '-crf 23', // Constant Rate Factor för kvalitetskontroll
+            sizeOption ? `-s ${sizeOption}` : ''
+          ])
+          .output(this.outputFile)
+          .on('end', () => {
+            try {
+              const stats = fs.statSync(this.outputFile);
+              this.fileSize = stats.size;
+              logger.info(`Compression successful. Output file: ${this.outputFile}, Size: ${this.fileSize} bytes`);
+              resolve(true);
+            } catch (statErr) {
+              logger.error(`Error getting stats for compressed file: ${statErr.message}`);
+              reject(`Error getting stats for compressed file: ${statErr.message}`);
+            }
+          })
+          .on('error', (err) => {
+            logger.error(`Compression error: ${err.message}`);
+            reject(`Error occurred during compression: ${err.message}`);
+          });
+
+        if (sizeOption) {
+          command = command.size(sizeOption);
+        }
+
+        command.run();
+      });
+    } catch (error) {
+      logger.error(`Compression aborted: ${error.message}`);
+      // Hantera felet, t.ex. skicka ett svar till klienten
+    }
+  }
+
+  async ensureInputFileExists() {
+    try {
+      await fs.access(this.inputFile);
+      logger.info(`Input file exists: ${this.inputFile}`);
+    } catch (err) {
+      logger.error(`Input file not found: ${this.inputFile}`);
+      throw new Error(`Input file not found: ${this.inputFile}`);
+    }
   }
 
   async getAspectRatio() {
@@ -109,6 +129,10 @@ export class VideoManager {
     return await new Promise((resolve, reject) => {
       ffmpeg(this.inputFile)
         .format(formatType)
+        .outputOptions([
+          '-preset medium',
+          '-crf 23'
+        ])
         .save(this.outputFile)
         .on('end', () => {
           try {
