@@ -1,4 +1,3 @@
-
 /* eslint-disable no-undef */
 // src/index.js
 
@@ -16,7 +15,6 @@ import { VideoManageController } from './controllers/VideoManager.js';
 import { pool } from './utils/dbConfig.js';
 import { DatabaseService } from './services/DatabaseService.js';
 import logger from './logger/logger.js';
-import { fileURLToPath } from 'url';
 
 const app = express();
 
@@ -30,12 +28,6 @@ app.use(cors({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const frontendPath = path.join(__dirname, '../../frontend');
-
-app.use(express.static(frontendPath));
 
 const storage = multer.memoryStorage();
 const upload = multer({ 
@@ -80,7 +72,7 @@ app.get('/status/:uuid', VideoManageController.status);
 
 app.post('/process', 
     heavyLimiter, 
-    upload.single('file'), 
+    upload.any('file'), 
     (err, req, res, next) => {
         if (err instanceof multer.MulterError) {
             return res.status(400).json({
@@ -95,10 +87,6 @@ app.post('/process',
     },
     VideoManageController.process
 );
-
-app.get('/', (req, res) => {
-    res.sendFile('index.html', { root: frontendPath });
-});
 
 app.use((err, req, res, next) => {
   logger.error('Global error handler:', err);
@@ -119,8 +107,7 @@ app.listen(PORT, () => {
         .createFolder(PATHS)
         .then(() => {
             logger.info(`Server running on port ${PORT}`);
-            logger.info(`Frontend available at http://localhost:${PORT}`);
-
+            
             pool
                 .getConnection()
                 .then((connection) => {
@@ -206,9 +193,7 @@ cron.schedule('0 0 * * *', async () => {
     }
 });
 
-process.on('unhandledRejection', (reason,) => {
+process.on('unhandledRejection', (reason) => {
     logger.error('Unhandled Rejection:', reason);
 });
-
-app.use(express.static('public'));
 

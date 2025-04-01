@@ -191,8 +191,12 @@ async function process(req, res) {
     const uploadService = new UploadService({ path: PATHS.TMP });
     uploadService.req = req;
 
-    const uploadedFile = req.file;
+    // Changed from req.file to req.files[0] since we're using upload.any()
+    const uploadedFile = req.files && req.files.length > 0 ? req.files[0] : null;
     if (!uploadedFile) {
+      logger.error('No file uploaded or file not properly sent in request');
+      logger.debug('Request files:', req.files);
+      logger.debug('Request body:', req.body);
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
