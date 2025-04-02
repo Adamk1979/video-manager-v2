@@ -9,6 +9,7 @@ import { DatabaseService } from '../services/DatabaseService.js';
 import { pool } from '../utils/dbConfig.js';
 import logger from '../logger/logger.js';
 import fs from 'fs';
+import { jobQueue } from '../worker/worker.js';
 
 /**
  * Controller function to stream a video file to the client.
@@ -216,6 +217,10 @@ async function process(req, res) {
       status: 'pending',
       options: JSON.stringify(options) // Ensure options are stored as JSON string
     });
+
+    // Emit a new job event to the queue
+    logger.info(`Emitting newJob event for job: ${uploadService.videoId}`);
+    jobQueue.emit('newJob', uploadService.videoId);
 
     // Return the UUID to the client
     return res.json({ uuid: uploadService.videoId });

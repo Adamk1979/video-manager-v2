@@ -2,9 +2,81 @@ import fs from 'fs';
 import { PATHS } from '../utils/constants.js';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from '@ffprobe-installer/ffprobe';
+import path from 'path';
 import logger from '../logger/logger.js';
 
+// Log the paths from static packages
+logger.info(`FFmpeg static path: ${ffmpegStatic}`);
+
+// Find ffprobe binary - check both possible locations
+let ffprobePath = '';
+const possiblePaths = [
+  ffprobeStatic.path,
+  path.resolve('./node_modules/@ffprobe-installer/linux-x64/ffprobe'),
+  path.resolve('./node_modules/@ffprobe-installer/ffprobe')
+];
+
+for (const probePath of possiblePaths) {
+  try {
+    if (probePath && fs.existsSync(probePath)) {
+      ffprobePath = probePath;
+      logger.info(`Found valid ffprobe at: ${ffprobePath}`);
+      break;
+    }
+  } catch (err) {
+    logger.warn(`Error checking ffprobe path ${probePath}: ${err.message}`);
+  }
+}
+
+if (!ffprobePath) {
+  logger.error('No valid ffprobe binary found in any of the expected locations');
+}
+
+// Check if the files exist and have execute permissions
+try {
+  if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
+    const ffmpegStats = fs.statSync(ffmpegStatic);
+    const isExecutable = !!(ffmpegStats.mode & 0o111);
+    logger.info(`FFmpeg binary exists at: ${ffmpegStatic} (executable: ${isExecutable})`);
+    
+    if (!isExecutable) {
+      logger.warn('FFmpeg binary is not executable, attempting to add execute permission');
+      try {
+        fs.chmodSync(ffmpegStatic, '755');
+        logger.info('Execute permission added to FFmpeg binary');
+      } catch (chmodErr) {
+        logger.error(`Failed to add execute permission to FFmpeg: ${chmodErr.message}`);
+      }
+    }
+  } else {
+    logger.error(`FFmpeg binary NOT found at: ${ffmpegStatic}`);
+  }
+  
+  if (ffprobePath && fs.existsSync(ffprobePath)) {
+    const ffprobeStats = fs.statSync(ffprobePath);
+    const isExecutable = !!(ffprobeStats.mode & 0o111);
+    logger.info(`FFprobe binary exists at: ${ffprobePath} (executable: ${isExecutable})`);
+    
+    if (!isExecutable) {
+      logger.warn('FFprobe binary is not executable, attempting to add execute permission');
+      try {
+        fs.chmodSync(ffprobePath, '755');
+        logger.info('Execute permission added to FFprobe binary');
+      } catch (chmodErr) {
+        logger.error(`Failed to add execute permission to FFprobe: ${chmodErr.message}`);
+      }
+    }
+  } else {
+    logger.error(`FFprobe binary NOT found at: ${ffprobePath || 'undefined'}`);
+  }
+} catch (err) {
+  logger.error(`Error checking binaries: ${err.message}`);
+}
+
+// Set ffmpeg and ffprobe paths
 ffmpeg.setFfmpegPath(ffmpegStatic);
+ffmpeg.setFfprobePath(ffprobePath);
 
 export class VideoManager {
   constructor({ id, extension, inputFile, outputPath = PATHS.MEDIA }) {
@@ -29,6 +101,12 @@ export class VideoManager {
   
   async compress(resolution, customWidth) {
     logger.info(`Compress Method - ID: ${this.id}, Extension: ${this.extension}, InputFile: ${this.inputFile}`);
+    logger.info(`Compression parameters received:`, {
+      resolution,
+      customWidth,
+      resolutionType: typeof resolution,
+      customWidthType: typeof customWidth
+    });
 
     this.fileName = `${this.id}.${this.extension}`;
     this.outputFile = `${this.outputPath}/${this.fileName}`;
@@ -43,60 +121,154 @@ export class VideoManager {
     let sizeOption;
 
     if (resolution === 'custom' && customWidth) {
-      const aspectRatio = await this.getAspectRatio();
-      const numericWidth = parseInt(customWidth, 10);
-      const customHeight = Math.round(numericWidth / aspectRatio);
-      sizeOption = `${numericWidth}x${customHeight}`;
+      logger.info(`Processing custom resolution with width: ${customWidth}`);
+      try {
+        let aspectRatio = 16/9; // Default fallback
+        
+        try {
+          aspectRatio = await this.getAspectRatio();
+          logger.info(`Calculated aspect ratio: ${aspectRatio}`);
+        } catch (aspectRatioError) {
+          logger.error(`Error getting aspect ratio, using default 16:9: ${aspectRatioError.message}`);
+        }
+        
+        const numericWidth = parseInt(customWidth, 10);
+        logger.info(`Parsed numeric width: ${numericWidth}`);
+        if (isNaN(numericWidth) || numericWidth <= 0) {
+          throw new Error(`Invalid width value: ${customWidth}`);
+        }
+        const customHeight = Math.round(numericWidth / aspectRatio);
+        sizeOption = `${numericWidth}x${customHeight}`;
+        logger.info(`Final size option for custom resolution: ${sizeOption}`);
+      } catch (error) {
+        logger.error(`Error calculating custom resolution:`, error);
+        throw error;
+      }
     } else if (resolutionMap[resolution]) {
       sizeOption = resolutionMap[resolution];
+      logger.info(`Using predefined resolution: ${sizeOption}`);
     } else {
+      logger.warn(`No valid resolution option found. Resolution: ${resolution}, CustomWidth: ${customWidth}`);
       sizeOption = null;
     }
 
     return await new Promise((resolve, reject) => {
       let command = ffmpeg(this.inputFile);
 
+      // Event handler for ffmpeg process stderr output
+      command.on('stderr', (stderrLine) => {
+        logger.info(`FFmpeg output: ${stderrLine}`);
+      });
+
       if (sizeOption) {
         command = command.size(sizeOption);
+        logger.info(`Applying size option to ffmpeg command: ${sizeOption}`);
+      } else {
+        logger.info('No size option applied to ffmpeg command');
       }
 
       command
         .videoCodec('libx264')
         .output(this.outputFile)
+        .on('start', (commandLine) => {
+          logger.info(`FFmpeg command: ${commandLine}`);
+        })
+        .on('progress', (progress) => {
+          logger.info(`FFmpeg progress: ${JSON.stringify(progress)}`);
+        })
         .on('end', () => {
           try {
+            // Check if file was actually created
+            if (!fs.existsSync(this.outputFile)) {
+              return reject(new Error(`Output file was not created: ${this.outputFile}`));
+            }
+
             const stats = fs.statSync(this.outputFile);
             this.fileSize = stats.size;
+            
+            // Check if file is empty/too small
+            if (stats.size < 1000) {
+              return reject(new Error(`Output file is too small (${stats.size} bytes): ${this.outputFile}`));
+            }
+            
             logger.info(`Compression successful. Output file: ${this.outputFile}, Size: ${this.fileSize} bytes`);
             resolve(true);
           } catch (statErr) {
             logger.error(`Error getting stats for compressed file: ${statErr.message}`);
-            reject(`Error getting stats for compressed file: ${statErr.message}`);
+            reject(new Error(`Error getting stats for compressed file: ${statErr.message}`));
           }
         })
         .on('error', (err) => {
           logger.error(`Compression error: ${err.message}`);
-          reject(`Error occurred during compression: ${err.message}`);
+          logger.error(`Error details:`, err);
+          reject(new Error(`Error occurred during compression: ${err.message}`));
         })
         .run();
     });
   }
 
   async getAspectRatio() {
-    return await new Promise((resolve, reject) => {
-      ffmpeg.ffprobe(this.inputFile, (err, metadata) => {
-        if (err) {
-          reject(`FFProbe error: ${err.message}`);
-        } else {
-          const videoStream = metadata.streams.find((s) => s.codec_type === 'video');
-          if (videoStream) {
-            const { width, height } = videoStream;
-            resolve(width / height);
+    logger.info(`Getting aspect ratio for file: ${this.inputFile}`);
+    
+    // Check if file exists before processing
+    try {
+      await fs.promises.access(this.inputFile, fs.constants.R_OK);
+      logger.info(`File exists and is readable: ${this.inputFile}`);
+    } catch (err) {
+      logger.error(`File access error: ${err.message}`);
+      throw new Error(`Cannot access input file: ${err.message}`);
+    }
+    
+    return await new Promise((resolve) => {
+      logger.info(`Starting ffprobe process for file: ${this.inputFile}`);
+      
+      try {
+        ffmpeg.ffprobe(this.inputFile, (err, metadata) => {
+          if (err) {
+            logger.error(`FFProbe error: ${err.message}`, err);
+            
+            // Fall back to default aspect ratio of 16:9
+            logger.info('Falling back to default 16:9 aspect ratio');
+            resolve(16/9);
           } else {
-            reject('No video stream found');
+            logger.info(`FFProbe metadata received`);
+            
+            if (!metadata || !metadata.streams) {
+              logger.error('No metadata or streams found in file');
+              // Fallback to default aspect ratio
+              logger.info('Falling back to default 16:9 aspect ratio (no streams)');
+              return resolve(16/9);
+            }
+            
+            const videoStream = metadata.streams.find((s) => s.codec_type === 'video');
+            if (videoStream) {
+              const { width, height } = videoStream;
+              logger.info(`Found video dimensions: ${width}x${height}`);
+              
+              if (!width || !height || width <= 0 || height <= 0) {
+                logger.error(`Invalid dimensions: ${width}x${height}`);
+                // Fallback to default aspect ratio
+                logger.info('Falling back to default 16:9 aspect ratio (invalid dimensions)');
+                return resolve(16/9);
+              }
+              
+              const aspectRatio = width / height;
+              logger.info(`Calculated aspect ratio: ${aspectRatio}`);
+              resolve(aspectRatio);
+            } else {
+              logger.error('No video stream found in file');
+              // Fallback to default aspect ratio
+              logger.info('Falling back to default 16:9 aspect ratio (no video stream)');
+              resolve(16/9);
+            }
           }
-        }
-      });
+        });
+      } catch (ffprobeError) {
+        logger.error(`Exception in ffprobe: ${ffprobeError.message}`, ffprobeError);
+        // Fallback to default aspect ratio
+        logger.info('Falling back to default 16:9 aspect ratio (exception)');
+        resolve(16/9);
+      }
     });
   }
   

@@ -9,10 +9,10 @@ import { pool } from '../utils/dbConfig.js';
 import logger from '../logger/logger.js';
 import fs from 'fs/promises';
 import path from 'path';
+import EventEmitter from 'events';
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// Create a queue emitter for job notifications
+export const jobQueue = new EventEmitter();
 
 async function updateProgress(id, progress) {
   try {
@@ -106,14 +106,25 @@ async function processJob(job) {
     }
 
     if (options.compress) {
-      logger.info(`Job ${job.id}: Starting compression`);
-      const isCompressed = await videoManager.compress(options.resolution, options.width);
-      if (!isCompressed) throw new Error('Compression failed');
-      compressedFileName = videoManager.fileName;
-      compressedFileSize = videoManager.fileSize;
-      progress += 20;
-      await updateProgress(job.id, progress);
-      logger.info(`Job ${job.id}: Compression completed successfully`);
+      logger.info(`Job ${job.id}: Starting compression with parameters:`, {
+        resolution: options.resolution,
+        width: options.width,
+        rawResolution: options.resolution,
+        rawWidth: options.width
+      });
+
+      try {
+        const isCompressed = await videoManager.compress(options.resolution, options.width);
+        if (!isCompressed) throw new Error('Compression failed without specific error');
+        compressedFileName = videoManager.fileName;
+        compressedFileSize = videoManager.fileSize;
+        progress += 20;
+        await updateProgress(job.id, progress);
+        logger.info(`Job ${job.id}: Compression completed successfully`);
+      } catch (compressionError) {
+        logger.error(`Job ${job.id}: Compression error details:`, compressionError);
+        throw compressionError; // Re-throw to be caught by the outer try-catch
+      }
 
       videoManager.updateProperties({ inputFile: videoManager.outputFile });
     }
@@ -174,35 +185,65 @@ async function processJob(job) {
     logger.info(`Job ${job.id} completed successfully with 100% progress`);
   } catch (error) {
     logger.error(`Error processing job ${job.id}:`, error);
-    await dbService.updateConversionStatus(job.id, 'failed', { errorMessage: error.message });
-  }
-}
-
-async function workerLoop() {
-  logger.info('Worker started and entering main loop');
-
-  while (true) {
+    logger.error(`Error stack trace:`, error.stack);
     try {
-      logger.info('Looking for pending jobs...');
-      const [rows] = await pool.execute(`
-        SELECT * FROM conversions WHERE status='pending' ORDER BY start_time LIMIT 1
-      `);
-
-      if (rows.length === 0) {
-        logger.info('No pending jobs found. Sleeping for 5 seconds.');
-        await sleep(5000);
-        continue;
-      }
-
-      const job = rows[0];
-      logger.info(`Found pending job: ${job.id}`);
-
-      await processJob(job);
-    } catch (err) {
-      logger.error('Unexpected error in worker loop:', err);
-      await sleep(5000);
+      await dbService.updateConversionStatus(job.id, 'failed', { errorMessage: error.message || 'Unknown error occurred' });
+    } catch (dbError) {
+      logger.error(`Failed to update job status after error:`, dbError);
     }
   }
 }
 
-workerLoop().catch(err => logger.error('Worker crashed:', err));
+// Initialize the queue listener
+async function initQueueListener() {
+  logger.info('Initializing queue listener');
+  
+  // Set up event listener for new jobs
+  jobQueue.on('newJob', async (jobId) => {
+    logger.info(`Queue event received for job: ${jobId}`);
+    
+    try {
+      // Get the job information from the database
+      const [rows] = await pool.execute(`
+        SELECT * FROM conversions WHERE id = ? AND status = 'pending' LIMIT 1
+      `, [jobId]);
+      
+      if (rows.length === 0) {
+        logger.warn(`Job ${jobId} not found or not in pending status`);
+        return;
+      }
+      
+      const job = rows[0];
+      await processJob(job);
+    } catch (err) {
+      logger.error(`Error processing job ${jobId} from queue:`, err);
+    }
+  });
+  
+  // Periodically check for pending jobs that might have been missed
+  setInterval(async () => {
+    try {
+      logger.debug('Checking for pending jobs...');
+      const [rows] = await pool.execute(`
+        SELECT * FROM conversions WHERE status = 'pending' ORDER BY start_time LIMIT 5
+      `);
+      
+      if (rows.length > 0) {
+        logger.info(`Found ${rows.length} pending jobs in periodic check`);
+        
+        // Process each job sequentially
+        for (const job of rows) {
+          logger.info(`Processing pending job from periodic check: ${job.id}`);
+          await processJob(job);
+        }
+      }
+    } catch (err) {
+      logger.error('Error in periodic job check:', err);
+    }
+  }, 60000); // Check every minute
+  
+  logger.info('Queue listener initialized successfully');
+}
+
+// Start the queue listener
+initQueueListener().catch(err => logger.error('Failed to initialize queue listener:', err));

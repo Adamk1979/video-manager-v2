@@ -15,6 +15,8 @@ import { VideoManageController } from './controllers/VideoManager.js';
 import { pool } from './utils/dbConfig.js';
 import { DatabaseService } from './services/DatabaseService.js';
 import logger from './logger/logger.js';
+// Import worker module to initialize the queue listener
+import './worker/worker.js';
 
 const app = express();
 
