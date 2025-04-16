@@ -4,3 +4,4 @@ tmp
 TODO.md
 logs
 yarn.lock
+.env
