@@ -5,3 +5,42 @@ TODO.md
 logs
 yarn.lock
 .env
+
+# Media files
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.ogg
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# Temporary files
+.tmp
+*.tmp
+.temp
+*.temp
+
+# Generated files
+/dist
+/build
+
+# Logs
+*.log
+/logs/*
+!logs/.gitkeep
+
+# IDE and editor files
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
